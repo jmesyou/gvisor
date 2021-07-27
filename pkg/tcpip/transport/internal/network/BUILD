@@ -9,6 +9,7 @@ go_library(
         "endpoint_state.go",
     ],
     visibility = [
+        "//pkg/tcpip/transport/raw:__pkg__",
         "//pkg/tcpip/transport/udp:__pkg__",
     ],
     deps = [
@@ -32,6 +33,7 @@ go_test(
         "//pkg/tcpip/faketime",
         "//pkg/tcpip/header",
         "//pkg/tcpip/link/channel",
+        "//pkg/tcpip/link/loopback",
         "//pkg/tcpip/network/ipv4",
         "//pkg/tcpip/network/ipv6",
         "//pkg/tcpip/stack",
