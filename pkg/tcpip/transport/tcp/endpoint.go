@@ -187,6 +187,8 @@ const (
 	// say TIME_WAIT.
 	notifyTickleWorker
 	notifyError
+	// notifyShutdown means that a connecting socket was shutdown.
+	notifyShutdown
 )
 
 // SACKInfo holds TCP SACK related information for a given endpoint.
@@ -315,7 +317,15 @@ type accepted struct {
 	// belong to one list at a time, and endpoints are already stored in the
 	// dispatcher's list.
 	endpoints list.List `state:".([]*endpoint)"`
-	cap       int
+
+	// pendingEndpointsFromSynCookie counts the number of endpoints that were
+	// created after receiving an ACK with a valid cookie, and are currently being
+	// delivered to the accept queue.
+	pendingEndpointsFromSynCookie int
+
+	// cap is the maximum number of endpoints that can be in the accepted endpoint
+	// list.
+	cap int
 }
 
 // endpoint represents a TCP endpoint. This struct serves as the interface
@@ -2380,6 +2390,18 @@ func (*endpoint) ConnectEndpoint(tcpip.Endpoint) tcpip.Error {
 func (e *endpoint) Shutdown(flags tcpip.ShutdownFlags) tcpip.Error {
 	e.LockUser()
 	defer e.UnlockUser()
+
+	if e.EndpointState().connecting() {
+		// When calling shutdown(2) on a connecting socket, it must enter the error
+		// state. But this logic cannot belong to the shutdownLocked method because
+		// it is used inside close(2) as well (and closing a connecting socket is
+		// not an error).
+		e.resetConnectionLocked(&tcpip.ErrConnectionReset{})
+		e.notifyProtocolGoroutine(notifyShutdown)
+		e.waiterQueue.Notify(waiter.WritableEvents | waiter.EventHUp | waiter.EventErr)
+		return nil
+	}
+
 	return e.shutdownLocked(flags)
 }
 
@@ -2490,7 +2512,7 @@ func (e *endpoint) listen(backlog int) tcpip.Error {
 		} else {
 			// Adjust the size of the backlog iff we can fit
 			// existing pending connections into the new one.
-			if e.accepted.endpoints.Len() > backlog {
+			if e.acceptQueueIsFullLocked(backlog) {
 				return &tcpip.ErrInvalidEndpointState{}
 			}
 			e.accepted.cap = backlog
