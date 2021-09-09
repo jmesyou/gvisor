@@ -84,6 +84,20 @@ func (fsType FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virt
 	fs.MaxCachedDentries = maxCachedDentries
 	fs.VFSFilesystem().Init(vfsObj, &fsType, fs)
 
+	fsDir := fs.newDir(ctx, creds, defaultSysDirMode, nil)
+	fsDirI := fsDir.(*dir)
+	k := kernel.KernelFromContext(ctx)
+	// Create an empty directory to serve as the mount point for cgroupfs when
+	// cgroups are available. This emulates Linux behaviour, see
+	// kernel/cgroup.c:cgroup_init(). Note that in Linux, userspace (typically
+	// the init process) is ultimately responsible for actually mounting
+	// cgroupfs, but the kernel creates the mountpoint. For the sentry, the
+	// launcher mounts cgroupfs.
+	if k.CgroupRegistry() != nil {
+		fsDirI.OrderedChildren.Insert("cgroup", fs.newDir(ctx, creds, defaultSysDirMode, nil))
+		fsDirI.IncLinks(1)
+	}
+
 	root := fs.newDir(ctx, creds, defaultSysDirMode, map[string]kernfs.Inode{
 		"block": fs.newDir(ctx, creds, defaultSysDirMode, nil),
 		"bus":   fs.newDir(ctx, creds, defaultSysDirMode, nil),
@@ -97,7 +111,7 @@ func (fsType FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virt
 			}),
 		}),
 		"firmware": fs.newDir(ctx, creds, defaultSysDirMode, nil),
-		"fs":       fs.newDir(ctx, creds, defaultSysDirMode, nil),
+		"fs":       fsDir,
 		"kernel":   kernelDir(ctx, fs, creds),
 		"module":   fs.newDir(ctx, creds, defaultSysDirMode, nil),
 		"power":    fs.newDir(ctx, creds, defaultSysDirMode, nil),
