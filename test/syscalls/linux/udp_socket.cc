@@ -602,6 +602,41 @@ TEST_P(UdpSocketTest, DisconnectAfterBind) {
               SyscallFailsWithErrno(ENOTCONN));
 }
 
+TEST_P(UdpSocketTest, DisconnectAfterConnectWithoutBind) {
+  ASSERT_NO_ERRNO(BindLoopback());
+
+  // Connect the bound socket.
+  ASSERT_THAT(connect(sock_.get(), bind_addr_, addrlen_), SyscallSucceeds());
+
+  // Disconnect.
+  {
+    sockaddr_storage unspec = {.ss_family = AF_UNSPEC};
+    EXPECT_THAT(connect(sock_.get(), AsSockAddr(&unspec), sizeof(unspec)),
+                SyscallSucceeds());
+  }
+  {
+    // Check that we're not in a bound state.
+    sockaddr_storage addr;
+    socklen_t addrlen = sizeof(addr);
+    EXPECT_THAT(getsockname(sock_.get(), AsSockAddr(&addr), &addrlen),
+                SyscallSucceeds());
+    EXPECT_EQ(addrlen, addrlen_);
+    // Everything should be the zero value except the address family.
+    sockaddr_storage expected = {
+        .ss_family = static_cast<sa_family_t>(GetFamily()),
+    };
+    EXPECT_EQ(memcmp(&expected, &addr, addrlen_), 0);
+  }
+
+  {
+    // We are not connected so we have no peer.
+    sockaddr_storage addr;
+    socklen_t addrlen = sizeof(addr);
+    EXPECT_THAT(getpeername(sock_.get(), AsSockAddr(&addr), &addrlen),
+                SyscallFailsWithErrno(ENOTCONN));
+  }
+}
+
 TEST_P(UdpSocketTest, BindToAnyConnnectToLocalhost) {
   ASSERT_NO_ERRNO(BindAny());
 

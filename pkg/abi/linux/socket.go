@@ -542,6 +542,17 @@ type ControlMessageIPPacketInfo struct {
 	DestinationAddr InetAddr
 }
 
+// A ControlMessageIPv6PacketInfo is IPV6_PKTINFO socket control message.
+//
+// ControlMessageIPv6PacketInfo represents struct in6_pktinfo from linux/ipv6.h.
+//
+// +marshal
+// +stateify savable
+type ControlMessageIPv6PacketInfo struct {
+	DestinationAddr Inet6Addr
+	NIC             uint32
+}
+
 // SizeOfControlMessageCredentials is the binary size of a
 // ControlMessageCredentials struct.
 var SizeOfControlMessageCredentials = (*ControlMessageCredentials)(nil).SizeBytes()
@@ -565,6 +576,10 @@ const SizeOfControlMessageTClass = 4
 // SizeOfControlMessageIPPacketInfo is the size of an IP_PKTINFO
 // control message.
 const SizeOfControlMessageIPPacketInfo = 12
+
+// SizeOfControlMessageIPv6PacketInfo is the size of an IPV6_PKTINFO
+// control message.
+const SizeOfControlMessageIPv6PacketInfo = 20
 
 // SCM_MAX_FD is the maximum number of FDs accepted in a single sendmsg call.
 // From net/scm.h.

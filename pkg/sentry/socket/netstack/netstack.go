@@ -1344,6 +1344,14 @@ func getSockOptIPv6(t *kernel.Task, s socket.SocketOps, ep commonEndpoint, name 
 		v := primitive.Int32(boolToInt32(ep.SocketOptions().GetReceiveOriginalDstAddress()))
 		return &v, nil
 
+	case linux.IPV6_RECVPKTINFO:
+		if outLen < sizeOfInt32 {
+			return nil, syserr.ErrInvalidArgument
+		}
+
+		v := primitive.Int32(boolToInt32(ep.SocketOptions().GetIPv6ReceivePacketInfo()))
+		return &v, nil
+
 	case linux.IP6T_ORIGINAL_DST:
 		if outLen < sockAddrInet6Size {
 			return nil, syserr.ErrInvalidArgument
@@ -2100,6 +2108,15 @@ func setSockOptIPv6(t *kernel.Task, s socket.SocketOps, ep commonEndpoint, name 
 		ep.SocketOptions().SetReceiveOriginalDstAddress(v != 0)
 		return nil
 
+	case linux.IPV6_RECVPKTINFO:
+		if len(optVal) < sizeOfInt32 {
+			return syserr.ErrInvalidArgument
+		}
+		v := int32(hostarch.ByteOrder.Uint32(optVal))
+
+		ep.SocketOptions().SetIPv6ReceivePacketInfo(v != 0)
+		return nil
+
 	case linux.IPV6_TCLASS:
 		if len(optVal) < sizeOfInt32 {
 			return syserr.ErrInvalidArgument
@@ -2489,7 +2506,6 @@ func emitUnimplementedEventIPv6(t *kernel.Task, name int) {
 		linux.IPV6_RECVHOPLIMIT,
 		linux.IPV6_RECVHOPOPTS,
 		linux.IPV6_RECVPATHMTU,
-		linux.IPV6_RECVPKTINFO,
 		linux.IPV6_RECVRTHDR,
 		linux.IPV6_RTHDR,
 		linux.IPV6_RTHDRDSTOPTS,
@@ -2715,6 +2731,8 @@ func (s *socketOpsCommon) controlMessages(cm tcpip.ControlMessages) socket.Contr
 			TClass:             readCM.TClass,
 			HasIPPacketInfo:    readCM.HasIPPacketInfo,
 			PacketInfo:         readCM.PacketInfo,
+			HasIPv6PacketInfo:  readCM.HasIPv6PacketInfo,
+			IPv6PacketInfo:     readCM.IPv6PacketInfo,
 			OriginalDstAddress: readCM.OriginalDstAddress,
 			SockErr:            readCM.SockErr,
 		},

@@ -451,6 +451,12 @@ type ControlMessages struct {
 	// PacketInfo holds interface and address data on an incoming packet.
 	PacketInfo IPPacketInfo
 
+	// HasIPv6PacketInfo indicates whether IPv6PacketInfo is set.
+	HasIPv6PacketInfo bool
+
+	// IPv6PacketInfo holds interface and address data on an incoming packet.
+	IPv6PacketInfo IPv6PacketInfo
+
 	// HasOriginalDestinationAddress indicates whether OriginalDstAddress is
 	// set.
 	HasOriginalDstAddress bool
@@ -1162,6 +1168,17 @@ type IPPacketInfo struct {
 
 	// DestinationAddr is the destination address found in the IP header.
 	DestinationAddr Address
+}
+
+// IPv6PacketInfo is the message structure for IPV6_PKTINFO.
+//
+// +stateify savable
+type IPv6PacketInfo struct {
+	// DestinationAddr is the destination address found in the IP header.
+	DestinationAddr Address
+
+	// NIC is the ID of the NIC to be used.
+	NIC NICID
 }
 
 // SendBufferSizeOption is used by stack.(Stack*).Option/SetOption to
