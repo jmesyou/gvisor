@@ -187,6 +187,35 @@ func (l *lockState) isCompatible(other *lockState) bool {
 	return l.isSubset(other) && other.isSubset(l)
 }
 
+// join returns a new lockState of the intersection of 2 states.
+func (l *lockState) join(other *lockState) *lockState {
+	rls := l.fork()
+
+	for addr, val := range rls.stored {
+		if oval, ok := other.stored[addr]; !ok || val != oval {
+			rls.modify()
+			delete(rls.stored, addr)
+		}
+	}
+
+	if l.isCompatible(other) {
+		return rls
+	}
+
+	for _, m := range rls.lockedMutexes {
+		intersection := make([]string, 0)
+		for _, om := range other.lockedMutexes {
+			if m == om {
+				intersection = append(intersection, m)
+			}
+		}
+		rls.modify()
+		rls.lockedMutexes = intersection
+	}
+
+	return rls
+}
+
 // elemType is a type that implements the Elem function.
 type elemType interface {
 	Elem() types.Type
