@@ -497,21 +497,9 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, ls *lockState) (*s
 	return nil, nil
 }
 
-// checkBasicBlock traverses the control flow graph starting at a set of given
-// block and checks each instruction for allowed operations.
+// checkBasicBlock checks each instruction of basic block for allowed operations.
+// The exit lock state of the basic block is returned if the block returns, otherwise nil is returned.
 func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, parent *lockState) *lockState {
-	// If the lock state is not compatible, then we need to do the
-	// recursive analysis to ensure that it is still sane. For example, the
-	// following is guaranteed to generate incompatible locking states:
-	//
-	//	if foo {
-	//		mu.Lock()
-	//	}
-	//	other stuff ...
-	//	if foo {
-	//		mu.Unlock()
-	//	}
-
 	var (
 		rv  *ssa.Return
 		rls *lockState
@@ -545,28 +533,33 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 	return rls
 }
 
-func (pc *passContext) checkBasicBlocks(fn *ssa.Function, blocks []*ssa.BasicBlock, lff *lockFunctionFacts, init *lockState) *lockState {
+// checkBody traverses the control flow graph of the function body in domination pre-order, checking
+// that each block maintains a consistent locking state on entry and exit
+//
+// lff contains the locks that must held upon entry to and exit from the function
+//
+// init is the initial lock state
+func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init *lockState) {
 	var (
-		pls   *lockState
-		rls   *lockState
-		block *ssa.BasicBlock
+		pls *lockState // predecessor lock state of a block
+		rls *lockState // return lock state of the function
 	)
 
-	block = blocks[0]
-	pls = init.fork()
-	rls = pc.checkBasicBlock(fn, block, lff, pls)
+	blocks := fn.DomPreorder()
+	entry := blocks[0]
+	rls = pc.checkBasicBlock(fn, entry, lff, init.fork())
 
-	seen := make(map[*ssa.BasicBlock]*lockState)
+	post := make(map[*ssa.BasicBlock]*lockState)
 
 	if rls != nil {
-		seen[block] = nil
+		post[entry] = nil
 	} else {
-		seen[block] = pls
+		post[entry] = pls
 	}
 
 	for i := 1; i < len(blocks); i++ {
-		block = blocks[i]
-		pls = computeIntersection(block.Preds, seen)
+		block := blocks[i]
+		pls = computeIntersection(block.Preds, post)
 
 		if pls == nil {
 			continue
@@ -579,42 +572,20 @@ func (pc *passContext) checkBasicBlocks(fn *ssa.Function, blocks []*ssa.BasicBlo
 				}
 			}
 			rls = ls
-			seen[block] = nil
+			post[block] = nil
 		} else {
-			seen[block] = pls
+			post[block] = pls
 		}
 	}
-
-	return pls
 }
 
 func computeIntersection(preds []*ssa.BasicBlock, seen map[*ssa.BasicBlock]*lockState) *lockState {
-	var (
-		pred  *ssa.BasicBlock
-		rls   *lockState
-		ls    *lockState
-		found bool
-	)
-	n := len(preds)
+	var rls *lockState
 
-	for i := 0; i < n; i++ {
-		pred = preds[i]
-
-		// if predecessor has not been seen yet, it is a back edge
-		if ls, found = seen[pred]; !found {
-			continue
-		}
-
-		// predecessor block returns or has no predecessors
-		if ls == nil {
-			continue
-		}
-
-		if rls == nil {
-			rls = ls
-		} else {
-			rls = rls.join(ls)
-		}
+	for _, pred := range preds {
+		// if predecessor has not been seen yet or it does not return, continue
+		ls := seen[pred]
+		rls = rls.join(ls)
 	}
 
 	return rls
@@ -664,7 +635,7 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 
 	// Scan the blocks.
 	if len(fn.Blocks) > 0 {
-		ls = pc.checkBasicBlocks(fn, fn.DomPreorder(), lff, ls)
+		pc.checkBody(fn, lff, ls)
 	}
 
 	// Scan the recover block.

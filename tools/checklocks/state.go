@@ -189,6 +189,12 @@ func (l *lockState) isCompatible(other *lockState) bool {
 
 // join returns a new lockState of the intersection of 2 states.
 func (l *lockState) join(other *lockState) *lockState {
+	if l == nil {
+		return other.fork()
+	} else if other == nil {
+		return l.fork()
+	}
+
 	rls := l.fork()
 
 	for addr, val := range rls.stored {
@@ -202,16 +208,19 @@ func (l *lockState) join(other *lockState) *lockState {
 		return rls
 	}
 
-	for _, m := range rls.lockedMutexes {
-		intersection := make([]string, 0)
-		for _, om := range other.lockedMutexes {
-			if m == om {
-				intersection = append(intersection, m)
-			}
-		}
-		rls.modify()
-		rls.lockedMutexes = intersection
+	present := make(map[string]bool, len(other.lockedMutexes))
+	for _, om := range other.lockedMutexes {
+	  present[om] = true
 	}
+	rls.modify() // the intersection must be different given the compatibility check above.
+	var w int
+	for i, n := 0, len(rls.lockedMutexes); i < n; i++ {
+	  if m := rls.lockedMutexes[i]; present[m] {
+		rls.lockedMutexes[w] = m
+		w++
+	  }
+	}
+	rls.lockedMutexes = rls.lockedMutexes[:w]
 
 	return rls
 }
