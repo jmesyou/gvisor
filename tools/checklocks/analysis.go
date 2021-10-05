@@ -499,15 +499,16 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, ls *lockState) (*s
 
 // checkBasicBlock checks each instruction of basic block for allowed operations.
 // The exit lock state of the basic block is returned if the block returns, otherwise nil is returned.
-func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, parent *lockState) *lockState {
+func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, parent *lockState, pre map[*ssa.BasicBlock]*lockState) *lockState {
 	var (
 		rv  *ssa.Return
 		rls *lockState
 	)
 
 	// Analyze this block.
+	ls := parent.fork()
 	for _, inst := range block.Instrs {
-		rv, rls = pc.checkInstruction(inst, parent)
+		rv, rls = pc.checkInstruction(inst, ls)
 		if rls != nil {
 			failed := false
 			// Validate held locks.
@@ -530,6 +531,11 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		}
 	}
 
+	for _, succ := range block.Succs {
+		entry := pre[succ]
+		pre[succ] = entry.join(pc, fn.Pos(), ls)
+	}
+
 	return rls
 }
 
@@ -544,51 +550,23 @@ func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init 
 		pls *lockState // predecessor lock state of a block
 		rls *lockState // return lock state of the function
 	)
-
 	blocks := fn.DomPreorder()
+
+	pre := make(map[*ssa.BasicBlock]*lockState)
 	entry := blocks[0]
-	rls = pc.checkBasicBlock(fn, entry, lff, init.fork())
+	pre[entry] = init.fork()
+	for _, block := range blocks {
+		pls = pre[block]
 
-	post := make(map[*ssa.BasicBlock]*lockState)
-
-	if rls != nil {
-		post[entry] = nil
-	} else {
-		post[entry] = pls
-	}
-
-	for i := 1; i < len(blocks); i++ {
-		block := blocks[i]
-		pls = computeIntersection(block.Preds, post)
-
-		if pls == nil {
-			continue
-		}
-
-		if ls := pc.checkBasicBlock(fn, block, lff, pls); ls != nil {
+		if ls := pc.checkBasicBlock(fn, block, lff, pls, pre); ls != nil {
 			if rls != nil && !ls.isCompatible(rls) {
 				if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok {
 					pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %v)", rls.String(), ls.String())
 				}
 			}
 			rls = ls
-			post[block] = nil
-		} else {
-			post[block] = pls
 		}
 	}
-}
-
-func computeIntersection(preds []*ssa.BasicBlock, seen map[*ssa.BasicBlock]*lockState) *lockState {
-	var rls *lockState
-
-	for _, pred := range preds {
-		// if predecessor has not been seen yet or it does not return, continue
-		ls := seen[pred]
-		rls = rls.join(ls)
-	}
-
-	return rls
 }
 
 // checkFunction checks a function invocation, typically starting with nil lockState.
@@ -639,8 +617,9 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 	}
 
 	// Scan the recover block.
+	pre := make(map[*ssa.BasicBlock]*lockState)
 	if fn.Recover != nil {
-		pc.checkBasicBlock(fn, fn.Recover, lff, ls)
+		pc.checkBasicBlock(fn, fn.Recover, lff, ls, pre)
 	}
 
 	// Update all lock state accordingly. This will be called only if we

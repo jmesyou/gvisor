@@ -188,7 +188,7 @@ func (l *lockState) isCompatible(other *lockState) bool {
 }
 
 // join returns a new lockState of the intersection of 2 states.
-func (l *lockState) join(other *lockState) *lockState {
+func (l *lockState) join(pc *passContext, pos token.Pos, other *lockState) *lockState {
 	if l == nil {
 		return other.fork()
 	} else if other == nil {
@@ -204,21 +204,21 @@ func (l *lockState) join(other *lockState) *lockState {
 		}
 	}
 
-	if l.isCompatible(other) {
-		return rls
+	if !rls.isCompatible(other) {
+		pc.maybeFail(pos, "inconsistent lock states (first: %s, second: %v)", rls.String(), other.String())
 	}
 
 	present := make(map[string]bool, len(other.lockedMutexes))
 	for _, om := range other.lockedMutexes {
-	  present[om] = true
+		present[om] = true
 	}
 	rls.modify() // the intersection must be different given the compatibility check above.
 	var w int
 	for i, n := 0, len(rls.lockedMutexes); i < n; i++ {
-	  if m := rls.lockedMutexes[i]; present[m] {
-		rls.lockedMutexes[w] = m
-		w++
-	  }
+		if m := rls.lockedMutexes[i]; present[m] {
+			rls.lockedMutexes[w] = m
+			w++
+		}
 	}
 	rls.lockedMutexes = rls.lockedMutexes[:w]
 
