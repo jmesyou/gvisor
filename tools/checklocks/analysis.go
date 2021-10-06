@@ -498,17 +498,20 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, ls *lockState) (*s
 }
 
 // checkBasicBlock checks each instruction of basic block for allowed operations.
-// The exit lock state of the basic block is returned if the block returns, otherwise nil is returned.
-func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, parent *lockState, pre map[*ssa.BasicBlock]*lockState) *lockState {
+//
+// ls is the post lock state after the final instruction in the block is checked.
+//
+// returns is true if the basic block has a return statement as the last instruction.
+func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, entry *lockState) (post *lockState, returns bool) {
 	var (
 		rv  *ssa.Return
 		rls *lockState
 	)
 
 	// Analyze this block.
-	ls := parent.fork()
+	post = entry.fork()
 	for _, inst := range block.Instrs {
-		rv, rls = pc.checkInstruction(inst, ls)
+		rv, rls = pc.checkInstruction(inst, post)
 		if rls != nil {
 			failed := false
 			// Validate held locks.
@@ -531,40 +534,49 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		}
 	}
 
-	for _, succ := range block.Succs {
-		entry := pre[succ]
-		pre[succ] = entry.join(pc, fn.Pos(), ls)
-	}
-
-	return rls
+	returns = rls != nil
+	return
 }
 
-// checkBody traverses the control flow graph of the function body in domination pre-order, checking
-// that each block maintains a consistent locking state on entry and exit
+// checkBody traverses the control flow graph of the function body, checking
+// that each block maintains a consistent locking state (the same locks are locked/unlocked) 
+// after branches in control flow and at all return sites from entry until exit.
 //
-// lff contains the locks that must held upon entry to and exit from the function
+// lff contains the locks that must held upon entry to and exit from the function.
 //
-// init is the initial lock state
+// init is the initial lock state when entering the function body, can be nil.
 func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init *lockState) {
-	var (
-		pls *lockState // predecessor lock state of a block
-		rls *lockState // return lock state of the function
-	)
 	blocks := fn.DomPreorder()
 
-	pre := make(map[*ssa.BasicBlock]*lockState)
-	entry := blocks[0]
-	pre[entry] = init.fork()
-	for _, block := range blocks {
-		pls = pre[block]
+	if len(blocks) == 0 {
+		return
+	}
 
-		if ls := pc.checkBasicBlock(fn, block, lff, pls, pre); ls != nil {
-			if rls != nil && !ls.isCompatible(rls) {
+	pre := make(map[*ssa.BasicBlock]*lockState)
+	start := blocks[0]
+	pre[start] = init.fork()
+
+	var exit *lockState // return lock state of the function
+	for _, block := range blocks {
+		entry := pre[block] // predecessor lock state of a block
+
+		if post, returns := pc.checkBasicBlock(fn, block, lff, entry); returns {
+			if exit != nil && !post.isCompatible(exit) {
 				if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok {
-					pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %v)", rls.String(), ls.String())
+					pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %v)", exit.String(), post.String())
 				}
 			}
-			rls = ls
+			exit = post
+		} else {
+			for _, succ := range block.Succs {
+				entry := pre[succ]
+
+				if !entry.isCompatible(post) {
+					pc.maybeFail(fn.Pos(), "inconsistent lock states (first: %s, second: %v)", entry.String(), post.String())
+				}
+
+				pre[succ] = entry.join(post)
+			}
 		}
 	}
 }
@@ -611,15 +623,12 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		}
 	}
 
-	// Scan the blocks.
-	if len(fn.Blocks) > 0 {
-		pc.checkBody(fn, lff, ls)
-	}
+	// Scan the body of the function.
+	pc.checkBody(fn, lff, ls)
 
 	// Scan the recover block.
-	pre := make(map[*ssa.BasicBlock]*lockState)
 	if fn.Recover != nil {
-		pc.checkBasicBlock(fn, fn.Recover, lff, ls, pre)
+		pc.checkBasicBlock(fn, fn.Recover, lff, ls)
 	}
 
 	// Update all lock state accordingly. This will be called only if we
