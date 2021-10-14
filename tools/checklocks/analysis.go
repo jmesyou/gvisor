@@ -497,19 +497,16 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, ls *lockState) (*s
 	return nil, nil
 }
 
-// checkBasicBlock checks each instruction of basic block for allowed operations.
-//
-// ls is the post lock state after the final instruction in the block is checked.
-//
-// returns is true if the basic block has a return statement as the last instruction.
-func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, entry *lockState) (post *lockState, returns bool) {
+// checkBasicBlock checks each instruction of basic block for allowed operations. Returns the
+// the lock state after the last instruction of the block.
+func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, entry *lockState) *lockState {
 	var (
 		rv  *ssa.Return
 		rls *lockState
 	)
 
 	// Analyze this block.
-	post = entry.fork()
+	post := entry.fork()
 	for _, inst := range block.Instrs {
 		rv, rls = pc.checkInstruction(inst, post)
 		if rls != nil {
@@ -534,15 +531,22 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		}
 	}
 
-	returns = rls != nil
-	return
+	return post
+}
+
+func basicBlockReturns(block *ssa.BasicBlock) bool {
+	if len(block.Instrs) > 0 {
+		_, returns := block.Instrs[len(block.Instrs)-1].(*ssa.Return)
+		return returns
+	}
+	return false
 }
 
 // checkBody traverses the control flow graph of the function body, checking
-// that each block maintains a consistent locking state (the same locks are locked/unlocked) 
+// that each block maintains a consistent locking state (the same locks are locked/unlocked)
 // after branches in control flow and at all return sites from entry until exit.
 //
-// lff contains the locks that must held upon entry to and exit from the function.
+// lff contains the locks that must be held upon entry to and exit from the function.
 //
 // init is the initial lock state when entering the function body, can be nil.
 func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init *lockState) {
@@ -560,7 +564,7 @@ func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init 
 	for _, block := range blocks {
 		entry := pre[block] // predecessor lock state of a block
 
-		if post, returns := pc.checkBasicBlock(fn, block, lff, entry); returns {
+		if post := pc.checkBasicBlock(fn, block, lff, entry); basicBlockReturns(block) {
 			if exit != nil && !post.isCompatible(exit) {
 				if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok {
 					pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %v)", exit.String(), post.String())

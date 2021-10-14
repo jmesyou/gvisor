@@ -182,7 +182,9 @@ func (l *lockState) count() int {
 	return len(l.lockedMutexes)
 }
 
-// isCompatible returns true if the states are compatible.
+// isCompatible returns true if the states hold the same locks.
+// The nil state is the lock superset and is compatible with any other
+// lock state.
 func (l *lockState) isCompatible(other *lockState) bool {
 	if l == nil || other == nil {
 		return true
@@ -192,7 +194,6 @@ func (l *lockState) isCompatible(other *lockState) bool {
 }
 
 // join returns a new lockState of the intersection of 2 states.
-// nil is consider the superset of locks, holding all locks in the other set.
 func (l *lockState) join(other *lockState) *lockState {
 	if l == nil {
 		return other
@@ -202,6 +203,7 @@ func (l *lockState) join(other *lockState) *lockState {
 
 	rls := l.fork()
 
+	// Take the intersection of stored elements
 	for addr, val := range rls.stored {
 		if oval, ok := other.stored[addr]; !ok || val != oval {
 			rls.modify()
@@ -209,6 +211,7 @@ func (l *lockState) join(other *lockState) *lockState {
 		}
 	}
 
+	// Take the intersection of locked mutexes
 	present := make(map[string]bool, len(other.lockedMutexes))
 	for _, om := range other.lockedMutexes {
 		present[om] = true
