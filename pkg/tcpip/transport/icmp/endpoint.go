@@ -213,11 +213,11 @@ func (e *endpoint) Read(dst io.Writer, opts tcpip.ReadOptions) (tcpip.ReadResult
 // reacquire the mutex in exclusive mode.
 //
 // Returns true for retry if preparation should be retried.
-// +checklocks:e.mu
-func (e *endpoint) prepareForWrite(to *tcpip.FullAddress) (retry bool, err tcpip.Error) {
-	switch e.state {
-	case stateInitial:
-	case stateConnected:
+// +checklocksread:e.mu
+func (e *endpoint) prepareForWriteInner(to *tcpip.FullAddress) (retry bool, err tcpip.Error) {
+	switch e.net.State() {
+	case transport.DatagramEndpointStateInitial:
+	case transport.DatagramEndpointStateConnected:
 		return false, nil
 
 	case stateBound:

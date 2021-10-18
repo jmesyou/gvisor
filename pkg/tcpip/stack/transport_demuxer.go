@@ -69,7 +69,7 @@ func (eps *transportEndpoints) transportEndpoints() []TransportEndpoint {
 // descending order of match quality. If a call to yield returns false,
 // iterEndpointsLocked stops iteration and returns immediately.
 //
-// Preconditions: eps.mu must be locked.
+// +checklocksread:eps.mu
 func (eps *transportEndpoints) iterEndpointsLocked(id TransportEndpointID, yield func(*endpointsByNIC) bool) {
 	// Try to find a match with the id as provided.
 	if ep, ok := eps.endpoints[id]; ok {
@@ -110,7 +110,7 @@ func (eps *transportEndpoints) iterEndpointsLocked(id TransportEndpointID, yield
 // findAllEndpointsLocked returns all endpointsByNIC in eps that match id, in
 // descending order of match quality.
 //
-// Preconditions: eps.mu must be locked.
+// +checklocksread:eps.mu
 func (eps *transportEndpoints) findAllEndpointsLocked(id TransportEndpointID) []*endpointsByNIC {
 	var matchedEPs []*endpointsByNIC
 	eps.iterEndpointsLocked(id, func(ep *endpointsByNIC) bool {
@@ -122,7 +122,7 @@ func (eps *transportEndpoints) findAllEndpointsLocked(id TransportEndpointID) []
 
 // findEndpointLocked returns the endpoint that most closely matches the given id.
 //
-// Preconditions: eps.mu must be locked.
+// +checklocksread:eps.mu
 func (eps *transportEndpoints) findEndpointLocked(id TransportEndpointID) *endpointsByNIC {
 	var matchedEP *endpointsByNIC
 	eps.iterEndpointsLocked(id, func(ep *endpointsByNIC) bool {

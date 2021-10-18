@@ -159,8 +159,14 @@ func (cn *conn) timedOut(now time.Time) bool {
 
 // update the connection tracking state.
 //
-// Precondition: cn.mu must be held.
-func (cn *conn) updateLocked(tcpHeader header.TCP, hook Hook) {
+// +checklocks:cn.mu
+func (cn *conn) updateLocked(pkt *PacketBuffer, reply bool) {
+	if pkt.TransportProtocolNumber != header.TCPProtocolNumber {
+		return
+	}
+
+	tcpHeader := header.TCP(pkt.TransportHeader().View())
+
 	// Update the state of tcb. tcb assumes it's always initialized on the
 	// client. However, we only need to know whether the connection is
 	// established or not, so the client/server distinction isn't important.
@@ -331,13 +337,140 @@ func (ct *ConnTrack) insertConn(conn *conn) {
 	tupleBucket := ct.bucket(conn.original.tupleID)
 	replyBucket := ct.bucket(conn.reply.tupleID)
 	ct.mu.RLock()
-	defer ct.mu.RUnlock()
-	if tupleBucket < replyBucket {
-		ct.buckets[tupleBucket].mu.Lock()
-		ct.buckets[replyBucket].mu.Lock()
-	} else if tupleBucket > replyBucket {
-		ct.buckets[replyBucket].mu.Lock()
-		ct.buckets[tupleBucket].mu.Lock()
+	bkt := &ct.buckets[bktID]
+	ct.mu.RUnlock()
+
+	now := time.Now()
+	if t := bkt.connForTID(tid, now); t != nil {
+		return t
+	}
+
+	bkt.mu.Lock()
+	defer bkt.mu.Unlock()
+
+	// Make sure a connection wasn't added between when we last checked the
+	// bucket and acquired the bucket's write lock.
+	if t := bkt.connForTIDRLocked(tid, now); t != nil {
+		return t
+	}
+
+	// This is the first packet we're seeing for the connection. Create an entry
+	// for this new connection.
+	conn := &conn{
+		ct:       ct,
+		original: tuple{tupleID: tid},
+		reply:    tuple{tupleID: tid.reply(), reply: true},
+		lastUsed: now,
+	}
+	conn.original.conn = conn
+	conn.reply.conn = conn
+
+	// For now, we only map an entry for the packet's original tuple as NAT may be
+	// performed on this connection. Until the packet goes through all the hooks
+	// and its final address/port is known, we cannot know what the response
+	// packet's addresses/ports will look like.
+	//
+	// This is okay because the destination cannot send its response until it
+	// receives the packet; the packet will only be received once all the hooks
+	// have been performed.
+	//
+	// See (*conn).finalize.
+	bkt.tuples.PushFront(&conn.original)
+	return &conn.original
+}
+
+func (ct *ConnTrack) connForTID(tid tupleID) *tuple {
+	bktID := ct.bucket(tid)
+
+	ct.mu.RLock()
+	bkt := &ct.buckets[bktID]
+	ct.mu.RUnlock()
+
+	return bkt.connForTID(tid, time.Now())
+}
+
+func (bkt *bucket) connForTID(tid tupleID, now time.Time) *tuple {
+	bkt.mu.RLock()
+	defer bkt.mu.RUnlock()
+	return bkt.connForTIDRLocked(tid, now)
+}
+
+// +checklocksread:bkt.mu
+func (bkt *bucket) connForTIDRLocked(tid tupleID, now time.Time) *tuple {
+	for other := bkt.tuples.Front(); other != nil; other = other.Next() {
+		if tid == other.id() && !other.conn.timedOut(now) {
+			return other
+		}
+	}
+	return nil
+}
+
+func (ct *ConnTrack) finalize(cn *conn) {
+	tid := cn.reply.id()
+	id := ct.bucket(tid)
+
+	ct.mu.RLock()
+	bkt := &ct.buckets[id]
+	ct.mu.RUnlock()
+
+	bkt.mu.Lock()
+	defer bkt.mu.Unlock()
+
+	if t := bkt.connForTIDRLocked(tid, time.Now()); t != nil {
+		// Another connection for the reply already exists. We can't do much about
+		// this so we leave the connection cn represents in a state where it can
+		// send packets but its responses will be mapped to some other connection.
+		// This may be okay if the connection only expects to send packets without
+		// any responses.
+		return
+	}
+
+	bkt.tuples.PushFront(&cn.reply)
+}
+
+func (cn *conn) finalize() {
+	{
+		cn.mu.RLock()
+		finalized := cn.finalized
+		cn.mu.RUnlock()
+		if finalized {
+			return
+		}
+	}
+
+	cn.mu.Lock()
+	finalized := cn.finalized
+	cn.finalized = true
+	cn.mu.Unlock()
+	if finalized {
+		return
+	}
+
+	cn.ct.finalize(cn)
+}
+
+// performNAT setups up the connection for the specified NAT.
+//
+// Generally, only the first packet of a connection reaches this method; other
+// other packets will be manipulated without needing to modify the connection.
+func (cn *conn) performNAT(pkt *PacketBuffer, hook Hook, r *Route, port uint16, address tcpip.Address, dnat bool) {
+	cn.performNATIfNoop(port, address, dnat)
+	cn.handlePacket(pkt, hook, r)
+}
+
+func (cn *conn) performNATIfNoop(port uint16, address tcpip.Address, dnat bool) {
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+
+	if cn.finalized {
+		return
+	}
+
+	if dnat {
+		if cn.destinationManip {
+			return
+		}
+		cn.destinationManip = true
 	} else {
 		// Both tuples are in the same bucket.
 		ct.buckets[tupleBucket].mu.Lock()
@@ -595,10 +728,10 @@ func (ct *ConnTrack) reapUnused(start int, prevInterval time.Duration) (int, tim
 // reapTupleLocked tries to remove tuple and its reply from the table. It
 // returns whether the tuple's connection has timed out.
 //
-// Preconditions:
-// * ct.mu is locked for reading.
-// * bucket is locked.
-func (ct *ConnTrack) reapTupleLocked(tuple *tuple, bucket int, now time.Time) bool {
+// Precondition: ct.mu is read locked and bkt.mu is write locked.
+// +checklocksread:ct.mu
+// +checklocks:bkt.mu
+func (ct *ConnTrack) reapTupleLocked(tuple *tuple, bktID int, bkt *bucket, now time.Time) bool {
 	if !tuple.conn.timedOut(now) {
 		return false
 	}
@@ -632,7 +765,16 @@ func (ct *ConnTrack) reapTupleLocked(tuple *tuple, bucket int, now time.Time) bo
 	return true
 }
 
-func (ct *ConnTrack) originalDst(epID TransportEndpointID, netProto tcpip.NetworkProtocolNumber) (tcpip.Address, uint16, tcpip.Error) {
+// +checklocks:b.mu
+func removeConnFromBucket(b *bucket, tuple *tuple) {
+	if tuple.reply {
+		b.tuples.Remove(&tuple.conn.original)
+	} else {
+		b.tuples.Remove(&tuple.conn.reply)
+	}
+}
+
+func (ct *ConnTrack) originalDst(epID TransportEndpointID, netProto tcpip.NetworkProtocolNumber, transProto tcpip.TransportProtocolNumber) (tcpip.Address, uint16, tcpip.Error) {
 	// Lookup the connection. The reply's original destination
 	// describes the original address.
 	tid := tupleID{
