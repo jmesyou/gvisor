@@ -188,9 +188,8 @@ func (l *lockState) count() int {
 func (l *lockState) isCompatible(other *lockState) bool {
 	if l == nil || other == nil {
 		return true
-	} else {
-		return l.isSubset(other) && other.isSubset(l)
 	}
+	return l.isSubset(other) && other.isSubset(l)
 }
 
 // join returns a new lockState of the intersection of 2 states.
@@ -207,6 +206,7 @@ func (l *lockState) join(other *lockState) *lockState {
 	for addr, val := range rls.stored {
 		if oval, ok := other.stored[addr]; !ok || val != oval {
 			rls.modify()
+			// TODO(jmesyou): Does it make sense to delete elements? Should we keep an extra info?
 			delete(rls.stored, addr)
 		}
 	}
