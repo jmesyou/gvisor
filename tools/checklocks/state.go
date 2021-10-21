@@ -182,9 +182,51 @@ func (l *lockState) count() int {
 	return len(l.lockedMutexes)
 }
 
-// isCompatible returns true if the states are compatible.
+// isCompatible returns true if the states hold the same locks.
+// The nil state is the lock superset and is compatible with any other
+// lock state.
 func (l *lockState) isCompatible(other *lockState) bool {
+	if l == nil || other == nil {
+		return true
+	}
 	return l.isSubset(other) && other.isSubset(l)
+}
+
+// join returns a new lockState of the intersection of 2 states.
+func (l *lockState) join(other *lockState) *lockState {
+	if l == nil {
+		return other
+	} else if other == nil {
+		return l
+	}
+
+	rls := l.fork()
+
+	// Take the intersection of stored elements
+	for addr, val := range rls.stored {
+		if oval, ok := other.stored[addr]; !ok || val != oval {
+			rls.modify()
+			// TODO(jmesyou): Does it make sense to delete elements? Should we keep an extra info?
+			delete(rls.stored, addr)
+		}
+	}
+
+	// Take the intersection of locked mutexes
+	present := make(map[string]bool, len(other.lockedMutexes))
+	for _, om := range other.lockedMutexes {
+		present[om] = true
+	}
+	rls.modify()
+	var w int
+	for i, n := 0, len(rls.lockedMutexes); i < n; i++ {
+		if m := rls.lockedMutexes[i]; present[m] {
+			rls.lockedMutexes[w] = m
+			w++
+		}
+	}
+	rls.lockedMutexes = rls.lockedMutexes[:w]
+
+	return rls
 }
 
 // elemType is a type that implements the Elem function.

@@ -497,35 +497,18 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, ls *lockState) (*s
 	return nil, nil
 }
 
-// checkBasicBlock traverses the control flow graph starting at a set of given
-// block and checks each instruction for allowed operations.
-func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, parent *lockState, seen map[*ssa.BasicBlock]*lockState) *lockState {
-	if oldLS, ok := seen[block]; ok && oldLS.isCompatible(parent) {
-		return nil
-	}
-
-	// If the lock state is not compatible, then we need to do the
-	// recursive analysis to ensure that it is still sane. For example, the
-	// following is guaranteed to generate incompatible locking states:
-	//
-	//	if foo {
-	//		mu.Lock()
-	//	}
-	//	other stuff ...
-	//	if foo {
-	//		mu.Unlock()
-	//	}
-
+// checkBasicBlock checks each instruction of basic block for allowed operations. Returns the
+// the lock state after the last instruction of the block.
+func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, lff *lockFunctionFacts, entry *lockState) *lockState {
 	var (
 		rv  *ssa.Return
 		rls *lockState
 	)
 
 	// Analyze this block.
-	seen[block] = parent
-	ls := parent.fork()
+	post := entry.fork()
 	for _, inst := range block.Instrs {
-		rv, rls = pc.checkInstruction(inst, ls)
+		rv, rls = pc.checkInstruction(inst, post)
 		if rls != nil {
 			failed := false
 			// Validate held locks.
@@ -548,23 +531,58 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 		}
 	}
 
-	// Analyze all successors.
-	for _, succ := range block.Succs {
-		// Collect possible return values, and make sure that the lock
-		// state aligns with any return value that we may have found
-		// above. Note that checkBasicBlock will recursively analyze
-		// the lock state to ensure that Releases and Acquires are
-		// respected.
-		if pls := pc.checkBasicBlock(fn, succ, lff, ls, seen); pls != nil {
-			if rls != nil && !rls.isCompatible(pls) {
+	return post
+}
+
+func basicBlockReturns(block *ssa.BasicBlock) bool {
+	if len(block.Instrs) > 0 {
+		_, returns := block.Instrs[len(block.Instrs)-1].(*ssa.Return)
+		return returns
+	}
+	return false
+}
+
+// checkBody traverses the control flow graph of the function body, checking
+// that each block maintains a consistent locking state (the same locks are locked/unlocked)
+// after branches in control flow and at all return sites from entry until exit.
+//
+// lff contains the locks that must be held upon entry to and exit from the function.
+//
+// init is the initial lock state when entering the function body, can be nil.
+func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init *lockState) {
+	blocks := fn.DomPreorder()
+
+	if len(blocks) == 0 {
+		return
+	}
+
+	pre := make(map[*ssa.BasicBlock]*lockState)
+	start := blocks[0]
+	pre[start] = init.fork()
+
+	var exit *lockState // return lock state of the function
+	for _, block := range blocks {
+		entry := pre[block] // predecessor lock state of a block
+
+		if post := pc.checkBasicBlock(fn, block, lff, entry); basicBlockReturns(block) {
+			if exit != nil && !post.isCompatible(exit) {
 				if _, ok := pc.forced[pc.positionKey(fn.Pos())]; !ok {
-					pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %v)", rls.String(), pls.String())
+					pc.maybeFail(fn.Pos(), "incompatible return states (first: %s, second: %v)", exit.String(), post.String())
 				}
 			}
-			rls = pls
+			exit = post
+		} else {
+			for _, succ := range block.Succs {
+				entry := pre[succ]
+
+				if !entry.isCompatible(post) {
+					pc.maybeFail(fn.Pos(), "inconsistent lock states (first: %s, second: %v)", entry.String(), post.String())
+				}
+
+				pre[succ] = entry.join(post)
+			}
 		}
 	}
-	return rls
 }
 
 // checkFunction checks a function invocation, typically starting with nil lockState.
@@ -609,15 +627,12 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		}
 	}
 
-	// Scan the blocks.
-	seen := make(map[*ssa.BasicBlock]*lockState)
-	if len(fn.Blocks) > 0 {
-		pc.checkBasicBlock(fn, fn.Blocks[0], lff, ls, seen)
-	}
+	// Scan the body of the function.
+	pc.checkBody(fn, lff, ls)
 
 	// Scan the recover block.
 	if fn.Recover != nil {
-		pc.checkBasicBlock(fn, fn.Recover, lff, ls, seen)
+		pc.checkBasicBlock(fn, fn.Recover, lff, ls)
 	}
 
 	// Update all lock state accordingly. This will be called only if we
