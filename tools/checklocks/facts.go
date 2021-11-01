@@ -145,8 +145,8 @@ type lockGuardFacts struct {
 	// relevant comment.
 	AtomicDisposition atomicDisposition
 
-	// Inferred is true if the lock guarding this field is inferred.
-	Inferred map[string]bool
+	// HatGuard is true if the lock guarding this field is a guessed mutex hat.
+	HatGuard map[string]bool
 }
 
 // AFact implements analysis.Fact.AFact.
@@ -472,7 +472,7 @@ func (pc *passContext) exportLockGuardFacts(ts *ast.TypeSpec, ss *ast.StructType
 				checkLocksAnnotation: func(guardName string) {
 					// Check for a duplicate annotation.
 					if _, ok := lgf.GuardedBy[guardName]; ok {
-						if inferred := lgf.Inferred[guardName]; !inferred {
+						if lgf.HatGuard != nil && !lgf.HatGuard[guardName] {
 							pc.maybeFail(fieldObj.Pos(), "annotation %s specified more than once", guardName)
 							return
 						}
@@ -486,10 +486,10 @@ func (pc *passContext) exportLockGuardFacts(ts *ast.TypeSpec, ss *ast.StructType
 						}
 						lgf.GuardedBy[guardName] = fl
 
-						if lgf.Inferred == nil {
-							lgf.Inferred = make(map[string]bool)
+						if lgf.HatGuard == nil {
+							lgf.HatGuard = make(map[string]bool)
 						}
-						lgf.Inferred[guardName] = false
+						lgf.HatGuard[guardName] = false
 					}
 				},
 			})
@@ -505,15 +505,19 @@ func isMutexType(typeName string) bool {
 	return mutexRE.MatchString(typeName) || rwMutexRE.MatchString(typeName)
 }
 
-// inferLockGuardFacts guesses whether fields are guarded under a mutex hat.
-func (pc *passContext) inferLockGuardFacts(ts *ast.TypeSpec, ss *ast.StructType) {
+// exportHatGuards guesses whether fields are guarded under a mutex hat.
+func (pc *passContext) exportHatGuards(ts *ast.TypeSpec, ss *ast.StructType) {
 	structType := pc.pass.TypesInfo.TypeOf(ts.Name).Underlying().(*types.Struct)
 
-	// mutexHatOf keeps track of the closest mutex above a line number.
+	// mutexHatOf keeps track of the closest mutex above or at a line number.
 	// If the field at the line number is a mutex, returns itself.
+	// If the field is not guarded by a mutex hat, returns an empty string.
+	// TODO(jamesyou): Support fields guarded by multiple mutexes
 	mutexHatOf := make(map[int]string)
 
 	fset := pc.pass.Fset
+	// Starting from the first, top-most field declaration of this struct type,
+	// populate `mutexHatOf` inductively, line by line.
 	for i, field := range ss.Fields.List {
 		fieldObj := structType.Field(i)
 
@@ -523,7 +527,7 @@ func (pc *passContext) inferLockGuardFacts(ts *ast.TypeSpec, ss *ast.StructType)
 			continue
 		}
 
-		// propagate the closest mutex hat from the top, skipping doc lines.
+		// If this field has doc lines, propagate the closest mutex hat through the doc lines.
 		if field.Doc != nil {
 			for _, comment := range field.Doc.List {
 				line := fset.Position(comment.Pos()).Line
@@ -534,9 +538,13 @@ func (pc *passContext) inferLockGuardFacts(ts *ast.TypeSpec, ss *ast.StructType)
 		line := fset.Position(fieldObj.Pos()).Line
 		mutexHatOf[line] = mutexHatOf[line-1]
 
+		guardName := mutexHatOf[line]
+		if guardName == "" {
+			continue
+		}
+
 		var lgf lockGuardFacts
 
-		guardName := mutexHatOf[i]
 		fl, _, ok := pc.resolveOneField(fieldObj.Pos(), structType, guardName /*checkMutex*/, true)
 		if ok {
 			if lgf.GuardedBy == nil {
@@ -544,17 +552,16 @@ func (pc *passContext) inferLockGuardFacts(ts *ast.TypeSpec, ss *ast.StructType)
 			}
 			lgf.GuardedBy[guardName] = fl
 
-			if lgf.Inferred == nil {
-				lgf.Inferred = make(map[string]bool)
+			if lgf.HatGuard == nil {
+				lgf.HatGuard = make(map[string]bool)
 			}
-			lgf.Inferred[guardName] = true
+			lgf.HatGuard[guardName] = true
 		}
 
 		if len(lgf.GuardedBy) > 0 {
 			pc.pass.ExportObjectFact(fieldObj, &lgf)
 		}
 	}
-
 }
 
 // countFields gives an accurate field count, according for unnamed arguments

@@ -16,5 +16,6 @@ go_library(
         "parameters.go",
         "return.go",
         "test.go",
+        "infer.go",
     ],
 )

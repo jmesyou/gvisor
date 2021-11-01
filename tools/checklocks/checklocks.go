@@ -95,7 +95,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	})
 	pc.forAllTypes(func(ts *ast.TypeSpec) {
 		if ss, ok := ts.Type.(*ast.StructType); ok {
-			pc.inferLockGuardFacts(ts, ss)
+			pc.exportHatGuards(ts, ss)
 		}
 	})
 	pc.forAllTypes(func(ts *ast.TypeSpec) {
