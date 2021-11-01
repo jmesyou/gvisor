@@ -25,7 +25,8 @@ import (
 type oneGuardStruct struct {
 	mu sync.Mutex
 	// +checklocks:mu
-	guardedField   int
+	guardedField int
+
 	unguardedField int
 }
 
@@ -73,6 +74,15 @@ type guessedGuardNoGuardStruct struct {
 	guardedField int
 
 	unguardedField int
+}
+
+type guessedAndAnnotatedGuardStruct struct {
+	mu           sync.Mutex
+	guardedField int
+
+	// +checklocks:mu
+	annotatedGuardField int
+	unguardedField      int
 }
 
 // TODO(jamesyou): add more structs to be inferred
