@@ -513,7 +513,7 @@ func (pc *passContext) exportHatGuards(ts *ast.TypeSpec, ss *ast.StructType) {
 	// If the field at the line number is a mutex, returns itself.
 	// If the field is not guarded by a mutex hat, returns an empty string.
 	// TODO(jamesyou): Support fields guarded by multiple mutexes
-	mutexHatOf := make(map[int]string)
+	mutexHatOf := make(map[int][]string)
 
 	fset := pc.pass.Fset
 	// Starting from the first, top-most field declaration of this struct type,
@@ -523,7 +523,7 @@ func (pc *passContext) exportHatGuards(ts *ast.TypeSpec, ss *ast.StructType) {
 
 		if typeName := fieldObj.Type().String(); isMutexType(typeName) {
 			line := fset.Position(fieldObj.Pos()).Line
-			mutexHatOf[line] = fieldObj.Name()
+			mutexHatOf[line] = append(mutexHatOf[line], fieldObj.Name())
 			continue
 		}
 
@@ -540,26 +540,28 @@ func (pc *passContext) exportHatGuards(ts *ast.TypeSpec, ss *ast.StructType) {
 
 		var lgf lockGuardFacts
 
-		guardName := mutexHatOf[line]
-		if guardName == "" {
+		guards := mutexHatOf[line]
+		if guards == nil {
 			continue
 		}
 
-		fl, _, ok := pc.resolveOneField(fieldObj.Pos(), structType, guardName /*checkMutex*/, true)
-		if ok {
-			if lgf.GuardedBy == nil {
-				lgf.GuardedBy = make(map[string]fieldList)
-			}
-			lgf.GuardedBy[guardName] = fl
+		for _, guardName := range guards {
+			fl, _, ok := pc.resolveOneField(fieldObj.Pos(), structType, guardName /*checkMutex*/, true)
+			if ok {
+				if lgf.GuardedBy == nil {
+					lgf.GuardedBy = make(map[string]fieldList)
+				}
+				lgf.GuardedBy[guardName] = fl
 
-			if lgf.HatGuard == nil {
-				lgf.HatGuard = make(map[string]bool)
+				if lgf.HatGuard == nil {
+					lgf.HatGuard = make(map[string]bool)
+				}
+				lgf.HatGuard[guardName] = true
 			}
-			lgf.HatGuard[guardName] = true
-		}
 
-		if len(lgf.GuardedBy) > 0 {
-			pc.pass.ExportObjectFact(fieldObj, &lgf)
+			if len(lgf.GuardedBy) > 0 {
+				pc.pass.ExportObjectFact(fieldObj, &lgf)
+			}
 		}
 	}
 }
