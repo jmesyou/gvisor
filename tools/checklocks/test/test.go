@@ -25,7 +25,8 @@ import (
 type oneGuardStruct struct {
 	mu sync.Mutex
 	// +checklocks:mu
-	guardedField   int
+	guardedField int
+
 	unguardedField int
 }
 
@@ -62,3 +63,26 @@ type nestedGuardStruct struct {
 	val oneGuardStruct
 	ptr *oneGuardStruct
 }
+
+type guessedGuardStruct struct {
+	mu           sync.Mutex
+	guardedField int
+}
+
+type guessedGuardNoGuardStruct struct {
+	mu           sync.Mutex
+	guardedField int
+
+	unguardedField int
+}
+
+type guessedAndAnnotatedGuardStruct struct {
+	mu           sync.Mutex
+	guardedField int
+
+	// +checklocks:mu
+	annotatedGuardField int
+	unguardedField      int
+}
+
+// TODO(jamesyou): add more structs to be inferred

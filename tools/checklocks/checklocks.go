@@ -95,10 +95,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	})
 	pc.forAllTypes(func(ts *ast.TypeSpec) {
 		if ss, ok := ts.Type.(*ast.StructType); ok {
+			pc.exportHatGuards(ts, ss)
+		}
+	})
+	pc.forAllTypes(func(ts *ast.TypeSpec) {
+		if ss, ok := ts.Type.(*ast.StructType); ok {
 			pc.exportLockGuardFacts(ts, ss)
 		}
 	})
-
 	// Check all alignments.
 	pc.forAllTypes(func(ts *ast.TypeSpec) {
 		typ, ok := pass.TypesInfo.TypeOf(ts.Name).(*types.Named)
