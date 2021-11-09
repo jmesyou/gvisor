@@ -78,6 +78,19 @@ func (pc *passContext) addForce(pos token.Pos) {
 	pc.forced[pc.positionKey(pos)] = struct{}{}
 }
 
+// recordErrorSite saves an error at a Pos for stats collection.
+func (pc *passContext) recordErrorSite(pos token.Pos) {
+	var pgf PkgPerfFacts
+	pc.pass.ImportPackageFact(pc.pass.Pkg, &pgf)
+
+	if pgf.ErrorSiteCount == nil {
+		pgf.ErrorSiteCount = make(map[token.Pos]int)
+	}
+	pgf.ErrorSiteCount[pos]++
+
+	pc.pass.ExportPackageFact(&pgf)
+}
+
 // maybeFail checks a potential failure against a specific failure map.
 func (pc *passContext) maybeFail(pos token.Pos, fmtStr string, args ...interface{}) {
 	if fd, ok := pc.failures[pc.positionKey(pos)]; ok {
@@ -87,6 +100,7 @@ func (pc *passContext) maybeFail(pos token.Pos, fmtStr string, args ...interface
 	if _, ok := pc.exemptions[pc.positionKey(pos)]; ok {
 		return // Ignored, not counted.
 	}
+	pc.recordErrorSite(pos)
 	pc.pass.Reportf(pos, fmtStr, args...)
 }
 

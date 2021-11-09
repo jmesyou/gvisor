@@ -22,19 +22,24 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"reflect"
+	"time"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
 )
 
+const Benchmark = true
+
 // Analyzer is the main entrypoint.
 var Analyzer = &analysis.Analyzer{
-	Name:      "checklocks",
-	Doc:       "checks lock preconditions on functions and fields",
-	Run:       run,
-	Requires:  []*analysis.Analyzer{buildssa.Analyzer},
-	FactTypes: []analysis.Fact{(*atomicAlignment)(nil), (*lockFieldFacts)(nil), (*lockGuardFacts)(nil), (*lockFunctionFacts)(nil)},
+	Name:       "checklocks",
+	Doc:        "checks lock preconditions on functions and fields",
+	Run:        run,
+	Requires:   []*analysis.Analyzer{buildssa.Analyzer},
+	FactTypes:  []analysis.Fact{(*atomicAlignment)(nil), (*lockFieldFacts)(nil), (*lockGuardFacts)(nil), (*lockFunctionFacts)(nil), (*PkgPerfFacts)(nil)},
+	ResultType: reflect.TypeOf((*PkgPerfFacts)(nil)),
 }
 
 // passContext is a pass with additional expected failures.
@@ -117,6 +122,15 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		pc.exportFunctionFacts(fn)
 	})
 
+	var (
+		pgf   PkgPerfFacts
+		start time.Time
+	)
+
+	if Benchmark {
+		pc.pass.ExportPackageFact(&pgf)
+	}
+
 	// Scan all code looking for invalid accesses.
 	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	for _, fn := range state.SrcFuncs {
@@ -138,8 +152,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			continue
 		}
 
+		if Benchmark {
+			start = time.Now()
+		}
+
 		// Check the basic blocks in the function.
 		pc.checkFunction(nil, fn, &lff, nil, false /* force */)
+
+		if Benchmark {
+			end := time.Since(start)
+			pc.pass.ImportPackageFact(pc.pass.Pkg, &pgf)
+			if pgf.FunctionCheckTime == nil {
+				pgf.FunctionCheckTime = make(map[string]time.Duration)
+			}
+			pgf.FunctionCheckTime[fn.Name()] = end
+			pc.pass.ExportPackageFact(&pgf)
+		}
 	}
 	for _, fn := range state.SrcFuncs {
 		// Ensure all anonymous functions are hit. They are not
@@ -153,6 +181,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	// Check for expected failures.
 	pc.checkFailures()
+
+	if Benchmark {
+		pc.pass.ImportPackageFact(pc.pass.Pkg, &pgf)
+		return &pgf, nil
+	}
 
 	return nil, nil
 }
