@@ -167,14 +167,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 
 		var start time.Time
-		if Benchmark {
+		if pc.perf != nil {
 			start = time.Now()
 		}
 
 		// Check the basic blocks in the function.
 		pc.checkFunction(nil, fn, &lff, nil, false /* force */)
 
-		if Benchmark {
+		if pc.perf != nil {
 			pc.perf.FunctionCheckTime[fn.Name()] = time.Since(start)
 		}
 	}
@@ -191,9 +191,5 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// Check for expected failures.
 	pc.checkFailures()
 
-	if Benchmark {
-		return pc.perf, nil
-	}
-
-	return nil, nil
+	return pc.perf, nil
 }
