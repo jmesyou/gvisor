@@ -38,8 +38,30 @@ var Analyzer = &analysis.Analyzer{
 	Doc:        "checks lock preconditions on functions and fields",
 	Run:        run,
 	Requires:   []*analysis.Analyzer{buildssa.Analyzer},
-	FactTypes:  []analysis.Fact{(*atomicAlignment)(nil), (*lockFieldFacts)(nil), (*lockGuardFacts)(nil), (*lockFunctionFacts)(nil), (*PkgPerfFacts)(nil)},
-	ResultType: reflect.TypeOf((*PkgPerfFacts)(nil)),
+	FactTypes:  []analysis.Fact{(*atomicAlignment)(nil), (*lockFieldFacts)(nil), (*lockGuardFacts)(nil), (*lockFunctionFacts)(nil)},
+	ResultType: reflect.TypeOf((*PkgPerfData)(nil)),
+}
+
+// PKfPerfData stores revelant analysis stats for processing in benchlocks.
+type PkgPerfData struct {
+	// ErrorSiteCount records the total number of errors reported at a token.Pos.
+	ErrorSiteCount map[token.Pos]int
+
+	// BasicBlocksVisits stores the average number of visits made per basic block
+	// in the control flow graph of a function.
+	BasicBlockVisits map[string]int
+
+	// FunctionCheckTime is the time spent analyzing a function. The data
+	// is saved as time.Duration as the unit of time can be decided after processing.
+	FunctionCheckTime map[string]time.Duration
+}
+
+func newPkgPerfData() *PkgPerfData {
+	return &PkgPerfData{
+		ErrorSiteCount:    make(map[token.Pos]int),
+		BasicBlockVisits:  make(map[string]int),
+		FunctionCheckTime: make(map[string]time.Duration),
+	}
 }
 
 // passContext is a pass with additional expected failures.
@@ -49,6 +71,7 @@ type passContext struct {
 	exemptions map[positionKey]struct{}
 	forced     map[positionKey]struct{}
 	functions  map[*ssa.Function]struct{}
+	perfdata   *PkgPerfData
 }
 
 // forAllTypes applies the given function over all types.
@@ -87,6 +110,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		exemptions: make(map[positionKey]struct{}),
 		forced:     make(map[positionKey]struct{}),
 		functions:  make(map[*ssa.Function]struct{}),
+		perfdata:   newPkgPerfData(),
 	}
 
 	// Find all line failure annotations.
@@ -122,15 +146,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		pc.exportFunctionFacts(fn)
 	})
 
-	var (
-		pgf   PkgPerfFacts
-		start time.Time
-	)
-
-	if Benchmark {
-		pc.pass.ExportPackageFact(&pgf)
-	}
-
 	// Scan all code looking for invalid accesses.
 	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	for _, fn := range state.SrcFuncs {
@@ -152,6 +167,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			continue
 		}
 
+		var start time.Time
 		if Benchmark {
 			start = time.Now()
 		}
@@ -161,12 +177,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		if Benchmark {
 			end := time.Since(start)
-			pc.pass.ImportPackageFact(pc.pass.Pkg, &pgf)
-			if pgf.FunctionCheckTime == nil {
-				pgf.FunctionCheckTime = make(map[string]time.Duration)
-			}
-			pgf.FunctionCheckTime[fn.Name()] = end
-			pc.pass.ExportPackageFact(&pgf)
+			pc.perfdata.FunctionCheckTime[fn.Name()] = end
 		}
 	}
 	for _, fn := range state.SrcFuncs {
@@ -183,8 +194,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	pc.checkFailures()
 
 	if Benchmark {
-		pc.pass.ImportPackageFact(pc.pass.Pkg, &pgf)
-		return &pgf, nil
+		return pc.perfdata, nil
 	}
 
 	return nil, nil

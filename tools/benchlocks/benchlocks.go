@@ -1,3 +1,5 @@
+// Package benchlocks processes collected data from the checklocks
+// analyzer and outputs statistics as diagnostics.
 package benchlocks
 
 import (
@@ -10,38 +12,37 @@ import (
 
 type Stats map[string]string
 
-type StatsPass struct {
+type statsPass struct {
 	pass *analysis.Pass
 }
 
 var Analyzer = &analysis.Analyzer{
-	Name:      "benchlocks",
-	Doc:       "Processes and outputs stats from the checklocks analyzer",
-	Run:       run,
-	Requires:  []*analysis.Analyzer{checklocks.Analyzer},
-	FactTypes: []analysis.Fact{},
+	Name:     "benchlocks",
+	Doc:      "Processes and outputs stats from the checklocks analyzer",
+	Run:      run,
+	Requires: []*analysis.Analyzer{checklocks.Analyzer},
 }
 
-func (sp *StatsPass) collectChecklocksStats(pgf *checklocks.PkgPerfFacts) Stats {
+func (sp *statsPass) collectChecklocksStats(ppd *checklocks.PkgPerfData) Stats {
 	var (
 		total   time.Duration
-		fn      string
-		slowest time.Duration
+		slowest string
+		max     time.Duration
 	)
-	for f, time := range pgf.FunctionCheckTime {
+	for f, time := range ppd.FunctionCheckTime {
 		total += time
-		if time > slowest {
-			fn, slowest = f, time
+		if time > max {
+			slowest, max = f, time
 		}
 	}
 	stats := make(map[string]string)
 	stats["total_time"] = fmt.Sprintf("%d ms", total.Milliseconds())
-	stats["slowest_function"] = fn
-	stats["slowest_time"] = fmt.Sprintf("%d us", total.Microseconds())
+	stats["slowest_function"] = slowest
+	stats["slowest_time"] = fmt.Sprintf("%d us", max.Microseconds())
 
 	var totalErrors int
 	problematicFiles := make(map[string]struct{})
-	for pos, count := range pgf.ErrorSiteCount {
+	for pos, count := range ppd.ErrorSiteCount {
 		position := sp.pass.Fset.Position(pos)
 		problematicFiles[position.Filename] = struct{}{}
 		totalErrors += count
@@ -54,14 +55,14 @@ func (sp *StatsPass) collectChecklocksStats(pgf *checklocks.PkgPerfFacts) Stats 
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
-	if !checklocks.Benchmark {
+	sp := statsPass{pass}
+	ppd := sp.pass.ResultOf[checklocks.Analyzer].(*checklocks.PkgPerfData)
+
+	if checklocks.Benchmark && ppd == nil {
 		return nil, nil
 	}
 
-	sp := StatsPass{pass}
-
-	results := sp.pass.ResultOf[checklocks.Analyzer].(*checklocks.PkgPerfFacts)
-	stats := sp.collectChecklocksStats(results)
+	stats := sp.collectChecklocksStats(ppd)
 
 	for name, data := range stats {
 		pass.Report(analysis.Diagnostic{

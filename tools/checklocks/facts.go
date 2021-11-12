@@ -21,7 +21,6 @@ import (
 	"go/types"
 	"regexp"
 	"strings"
-	"time"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -687,19 +686,3 @@ func (pc *passContext) exportFunctionFacts(d *ast.FuncDecl) {
 		pc.pass.ExportObjectFact(funcObj, &lff)
 	}
 }
-
-// PKfPerfFacts stores revelant analysis stats for processing in benchlocks.
-type PkgPerfFacts struct {
-	// ErrorSiteCount records the total number of errors reported at a token.Pos
-	ErrorSiteCount map[token.Pos]int
-
-	// BasicBlocksVisits stores the average number of visits made per basic block
-	// in the control flow graph of a function.
-	BasicBlockVisits map[string]int
-
-	// FunctionCheckTime is the time spent analyzing a function. The data
-	// is saved as time.Duration as the unit of time can be decided after processing
-	FunctionCheckTime map[string]time.Duration
-}
-
-func (*PkgPerfFacts) AFact() {}
