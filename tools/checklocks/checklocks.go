@@ -54,9 +54,6 @@ type PkgPerfData struct {
 	// FunctionCheckTime is the time spent analyzing a function. The data
 	// is saved as time.Duration as the unit of time can be decided after processing.
 	FunctionCheckTime map[string]time.Duration
-
-	// start is a temporary variable used in computing function check times.
-	start time.Time
 }
 
 // passContext is a pass with additional expected failures.
@@ -169,15 +166,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			continue
 		}
 
+		var start time.Time
 		if Benchmark {
-			pc.perf.start = time.Now()
+			start = time.Now()
 		}
 
 		// Check the basic blocks in the function.
 		pc.checkFunction(nil, fn, &lff, nil, false /* force */)
 
 		if Benchmark {
-			pc.perf.FunctionCheckTime[fn.Name()] = time.Since(pc.perf.start)
+			pc.perf.FunctionCheckTime[fn.Name()] = time.Since(start)
 		}
 	}
 	for _, fn := range state.SrcFuncs {
