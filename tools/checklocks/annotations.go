@@ -87,7 +87,7 @@ func (pc *passContext) maybeFail(pos token.Pos, fmtStr string, args ...interface
 	if _, ok := pc.exemptions[pc.positionKey(pos)]; ok {
 		return // Ignored, not counted.
 	}
-	pc.perfdata.ErrorSiteCount[pos]++
+	pc.perf.ErrorSiteCount[pos]++
 	pc.pass.Reportf(pos, fmtStr, args...)
 }
 

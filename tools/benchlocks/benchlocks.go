@@ -23,7 +23,7 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{checklocks.Analyzer},
 }
 
-func (sp *statsPass) collectChecklocksStats(ppd *checklocks.PkgPerfData) Stats {
+func (sp *statsPass) collect(ppd *checklocks.PkgPerfData) Stats {
 	var (
 		total   time.Duration
 		slowest string
@@ -62,7 +62,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
-	stats := sp.collectChecklocksStats(ppd)
+	stats := sp.collect(ppd)
 
 	for name, data := range stats {
 		pass.Report(analysis.Diagnostic{
