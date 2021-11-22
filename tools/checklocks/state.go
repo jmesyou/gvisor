@@ -180,11 +180,11 @@ func (l *lockState) isSubset(other *lockState) bool {
 			held++
 		}
 	}
-	return held >= l.count()
+	return held >= l.numLocksHeld()
 }
 
-// count indicates the number of locks held.
-func (l *lockState) count() int {
+// numLocksHeld indicates the number of locks held.
+func (l *lockState) numLocksHeld() int {
 	held := 0
 	for _, lockType := range l.lockedMutexes {
 		if lockType == locked {
@@ -339,7 +339,7 @@ func (l *lockState) valueAsString(v ssa.Value) string {
 
 // String returns the full lock state.
 func (l *lockState) String() string {
-	if l.count() == 0 {
+	if l.numLocksHeld() == 0 {
 		return "no locks held"
 	}
 
