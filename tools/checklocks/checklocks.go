@@ -27,7 +27,9 @@ import (
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
+	"golang.org/x/tools/go/callgraph/static"
 	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/ssa/ssautil"
 )
 
 const Benchmark = true
@@ -64,6 +66,7 @@ type passContext struct {
 	forced     map[positionKey]struct{}
 	functions  map[*ssa.Function]struct{}
 	perf       *PkgPerfData
+	inferMode  bool
 }
 
 // forAllTypes applies the given function over all types.
@@ -145,8 +148,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		pc.exportFunctionFacts(fn)
 	})
 
+	// Find all function declarations and export relevant facts.
+	pc.forAllFunctions(func(fn *ast.FuncDecl) {
+		pc.gatherInferredParams(fn)
+	})
+
 	// Scan all code looking for invalid accesses.
 	state := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	callgraph := static.CallGraph(state.Pkg.Prog)
+	ssautil.MainPackages()
+
 	for _, fn := range state.SrcFuncs {
 		// Import function facts generated above.
 		//

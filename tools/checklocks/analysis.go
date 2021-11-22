@@ -22,6 +22,12 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
+type (
+	lockStateSet         = []*lockState
+	lockStateMap         = map[*lockState]lockStateSet
+	funcLockStateDomains = map[*ssa.Function]lockStateMap
+)
+
 func gcd(a, b atomicAlignment) atomicAlignment {
 	for b != 0 {
 		a, b = b, a%b
@@ -641,3 +647,5 @@ func (pc *passContext) checkFunction(call callCommon, fn *ssa.Function, lff *loc
 		pc.postFunctionCallUpdate(call, lff, parent)
 	}
 }
+
+func genEntryLockStates()

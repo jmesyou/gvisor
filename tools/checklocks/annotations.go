@@ -90,7 +90,10 @@ func (pc *passContext) maybeFail(pos token.Pos, fmtStr string, args ...interface
 	if pc.perf != nil {
 		pc.perf.ErrorSiteCount[pos]++
 	}
-	pc.pass.Reportf(pos, fmtStr, args...)
+
+	if !pc.inferMode {
+		pc.pass.Reportf(pos, fmtStr, args...)
+	}
 }
 
 // checkFailure checks for the expected failure counts.

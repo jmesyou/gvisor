@@ -259,6 +259,10 @@ type lockFunctionFacts struct {
 	//
 	// This is not used outside the local package.
 	Ignore bool
+
+	// InferParams tracks the locks of all parameters which are reachable within 1 hop
+	// and do not already have an existing annotation specified by the user.
+	InferParams []string
 }
 
 // AFact implements analysis.Fact.AFact.
@@ -685,4 +689,62 @@ func (pc *passContext) exportFunctionFacts(d *ast.FuncDecl) {
 		funcObj := pc.pass.TypesInfo.Defs[d.Name].(*types.Func)
 		pc.pass.ExportObjectFact(funcObj, &lff)
 	}
+}
+
+func (pc *passContext) gatherInferredParams(d *ast.FuncDecl) {
+	var (
+		lff           lockFunctionFacts
+		parameterList []*ast.Field
+	)
+	funcObj := pc.pass.TypesInfo.Defs[d.Name].(*types.Func)
+	pc.pass.ImportObjectFact(funcObj, &lff)
+
+	if lff.HeldOnEntry == nil {
+		lff.HeldOnEntry = make(map[string]functionGuard)
+	}
+
+	if d.Recv != nil {
+		parameterList = append(parameterList, d.Recv.List...)
+	}
+	if d.Type.Params != nil {
+		parameterList = append(parameterList, d.Type.Params.List...)
+	}
+
+	for _, param := range parameterList {
+		if len(param.Names) != 1 {
+			continue
+		}
+
+		ptrType, ok := pc.pass.TypesInfo.TypeOf(param.Type).Underlying().(*types.Pointer)
+		if !ok {
+			continue
+		}
+
+		structType, ok := ptrType.Elem().Underlying().(*types.Struct)
+		if !ok {
+			continue
+		}
+
+		for i := 0; i < structType.NumFields(); i++ {
+			fieldObj := structType.Field(i)
+
+			if typeName := fieldObj.Type().String(); !isMutexType(typeName) {
+				continue
+			}
+
+			guardName := param.Names[0].Name + "." + fieldObj.Name()
+
+			if _, ok := lff.HeldOnEntry[guardName]; ok {
+				// guard has already been annotated
+				continue
+			}
+
+			lff.InferParams = append(lff.InferParams, guardName)
+		}
+	}
+
+	if lff.InferParams != nil {
+		pc.pass.ExportObjectFact(funcObj, &lff)
+	}
+
 }
