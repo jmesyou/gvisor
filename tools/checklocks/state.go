@@ -24,53 +24,15 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// lockType tracks the set of states a lock is in
+// lockType represents the current state of the lock.
+// The 0 value represents the unlocked state.
 type lockType int
 
 const (
-	UNLOCKED lockType = 1 << iota
-	LOCKED
+	unlocked lockType = iota
+	locked
 	// TODO(jamesyou): DEFERUNLOCK
 )
-
-// is checks if a lock has a state.
-func (l lockType) is(t lockType) bool {
-	return l&t > 0
-}
-
-// isNot checks if a lock doesn't have a state.
-func (l lockType) isNot(t lockType) bool {
-	return !l.is(t)
-}
-
-// set attempts to add a state, returns false if lock is already in that state.
-func (l lockType) set(t lockType) (lockType, bool) {
-	notSet := l.isNot(t)
-	return l | t, notSet
-}
-
-// unSet attempts to remove a state, returns false if lock is not in that state.
-func (l lockType) unSet(t lockType) (lockType, bool) {
-	set := l.is(t)
-	tNot := ^t
-	return l & tNot, set
-}
-
-// lock attempts to change the state of the lock to only LOCKED.
-// Returns false if either adding the LOCKED or removing the UNLOCKED state fails.
-func (l lockType) lock() (lockType, bool) {
-	locked, alreadyLocked := l.set(LOCKED)
-	onlyLocked, notUnlocked := locked.unSet(UNLOCKED)
-	return onlyLocked, alreadyLocked || notUnlocked
-}
-
-// lock attempts to change the state of the lock to only UNLOCKED.
-// Returns false if either adding the UNLOCKED or removing the LOCKED state fails.
-func (l lockType) unlock() (lockType, bool) {
-	unlocked, alreadyUnlocked := l.set(UNLOCKED)
-	onlyUnlocked, notLocked := unlocked.unSet(LOCKED)
-	return onlyUnlocked, alreadyUnlocked || notLocked
-}
 
 // lockState tracks the locking state and aliases.
 type lockState struct {
@@ -155,14 +117,6 @@ func (l *lockState) modify() {
 	}
 }
 
-func (l *lockState) getLock(s string) lockType {
-	if _, found := l.lockedMutexes[s]; !found {
-		l.lockedMutexes[s] = UNLOCKED
-	}
-
-	return l.lockedMutexes[s]
-}
-
 // isHeld indicates whether the field is held is not.
 func (l *lockState) isHeld(rv resolvedValue) (string, bool) {
 	if !rv.valid {
@@ -170,9 +124,8 @@ func (l *lockState) isHeld(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	lockType := l.getLock(s)
-	isLocked := lockType.is(LOCKED) && lockType.isNot(UNLOCKED)
-	return s, isLocked
+	state := l.lockedMutexes[s]
+	return s, state == locked
 }
 
 // lockField locks the given field.
@@ -184,15 +137,12 @@ func (l *lockState) lockField(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	lockType := l.getLock(s)
-
-	l.modify()
-	locked, ok := lockType.lock()
-	l.lockedMutexes[s] = locked
-
-	if !ok {
+	if l.lockedMutexes[s] == locked {
 		return s, false
 	}
+
+	l.modify()
+	l.lockedMutexes[s] = locked
 
 	return s, true
 }
@@ -206,15 +156,12 @@ func (l *lockState) unlockField(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	lockType := l.getLock(s)
-
-	l.modify()
-	unlocked, ok := lockType.unlock()
-	l.lockedMutexes[s] = unlocked
-
-	if !ok {
+	if l.lockedMutexes[s] == unlocked {
 		return s, false
 	}
+
+	l.modify()
+	delete(l.lockedMutexes, s)
 
 	return s, true
 }
@@ -229,7 +176,7 @@ func (l *lockState) store(addr ssa.Value, v ssa.Value) {
 func (l *lockState) isSubset(other *lockState) bool {
 	held := 0 // Number in l, held by other.
 	for k, lockType := range l.lockedMutexes {
-		if lockType.is(LOCKED) && other.getLock(k).is(LOCKED) {
+		if lockType == locked && lockType == other.lockedMutexes[k] {
 			held++
 		}
 	}
@@ -239,8 +186,8 @@ func (l *lockState) isSubset(other *lockState) bool {
 // count indicates the number of locks held.
 func (l *lockState) count() int {
 	held := 0
-	for _, lock := range l.lockedMutexes {
-		if lock.is(LOCKED) {
+	for _, lockType := range l.lockedMutexes {
+		if lockType == locked {
 			held++
 		}
 	}
@@ -278,14 +225,12 @@ func (l *lockState) join(other *lockState) *lockState {
 
 	// Take the intersection of locked mutexes
 	for k, lockType := range rls.lockedMutexes {
-		otherLockType := other.getLock(k)
-
-		if lockType == otherLockType {
+		if lockType == other.lockedMutexes[k] {
 			continue
 		}
 
 		rls.modify()
-		rls.lockedMutexes[k] = lockType | otherLockType
+		delete(rls.lockedMutexes, k)
 	}
 
 	return rls
@@ -400,7 +345,7 @@ func (l *lockState) String() string {
 
 	var locksHeld []string
 	for k, lockType := range l.lockedMutexes {
-		if lockType.is(LOCKED) {
+		if lockType == locked {
 			locksHeld = append(locksHeld, k)
 		}
 	}
