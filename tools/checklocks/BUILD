@@ -12,7 +12,9 @@ go_library(
         "state.go",
     ],
     nogo = False,
-    visibility = ["//tools/nogo:__subpackages__"],
+    visibility = [
+        "//tools:__subpackages__",
+    ],
     deps = [
         "@org_golang_x_tools//go/analysis:go_default_library",
         "@org_golang_x_tools//go/analysis/passes/buildssa:go_default_library",

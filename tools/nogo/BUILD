@@ -36,6 +36,7 @@ go_library(
     deps = [
         "//tools/checkescape",
         "//tools/checklocks",
+        "//tools/benchlocks",
         "//tools/checkunsafe",
         "//tools/nogo/objdump",
         "//tools/worker",
