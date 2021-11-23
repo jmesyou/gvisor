@@ -20,16 +20,27 @@ import (
 	"go/types"
 	"strings"
 	"sync/atomic"
+	"sort"
 
 	"golang.org/x/tools/go/ssa"
 )
 
+// lockType represents the current state of the lock.
+// The 0 value represents the unlocked state.
+type lockType int
+
+const (
+	unlocked lockType = iota
+	locked
+	// TODO(jamesyou): DEFERUNLOCK
+)
+
 // lockState tracks the locking state and aliases.
 type lockState struct {
-	// lockedMutexes is used to track which mutexes in a given struct are
+	// mutexes is used to track which mutexes in a given struct are
 	// currently locked. Note that most of the heavy lifting is done by
 	// valueAsString below, which maps to specific structure fields, etc.
-	lockedMutexes []string
+	mutexes map[string]lockType
 
 	// stored stores values that have been stored in memory, bound to
 	// FreeVars or passed as Parameterse.
@@ -51,11 +62,11 @@ type lockState struct {
 func newLockState() *lockState {
 	refs := int32(1) // Not shared.
 	return &lockState{
-		lockedMutexes: make([]string, 0),
-		used:          make(map[ssa.Value]struct{}),
-		stored:        make(map[ssa.Value]ssa.Value),
-		defers:        make([]*ssa.Defer, 0),
-		refs:          &refs,
+		mutexes: make(map[string]lockType),
+		used:    make(map[ssa.Value]struct{}),
+		stored:  make(map[ssa.Value]ssa.Value),
+		defers:  make([]*ssa.Defer, 0),
+		refs:    &refs,
 	}
 }
 
@@ -67,11 +78,11 @@ func (l *lockState) fork() *lockState {
 	}
 	atomic.AddInt32(l.refs, 1)
 	return &lockState{
-		lockedMutexes: l.lockedMutexes,
-		used:          make(map[ssa.Value]struct{}),
-		stored:        l.stored,
-		defers:        l.defers,
-		refs:          l.refs,
+		mutexes: l.mutexes,
+		used:    make(map[ssa.Value]struct{}),
+		stored:  l.stored,
+		defers:  l.defers,
+		refs:    l.refs,
 	}
 }
 
@@ -79,9 +90,11 @@ func (l *lockState) fork() *lockState {
 func (l *lockState) modify() {
 	if atomic.LoadInt32(l.refs) > 1 {
 		// Copy the lockedMutexes.
-		lm := make([]string, len(l.lockedMutexes))
-		copy(lm, l.lockedMutexes)
-		l.lockedMutexes = lm
+		lm := make(map[string]lockType)
+		for k, v := range l.mutexes {
+			lm[k] = v
+		}
+		l.mutexes = lm
 
 		// Copy the stored values.
 		s := make(map[ssa.Value]ssa.Value)
@@ -111,12 +124,9 @@ func (l *lockState) isHeld(rv resolvedValue) (string, bool) {
 		return rv.valueAsString(l), false
 	}
 	s := rv.valueAsString(l)
-	for _, k := range l.lockedMutexes {
-		if k == s {
-			return s, true
-		}
-	}
-	return s, false
+
+	state := l.mutexes[s]
+	return s, state == locked
 }
 
 // lockField locks the given field.
@@ -127,13 +137,14 @@ func (l *lockState) lockField(rv resolvedValue) (string, bool) {
 		return rv.valueAsString(l), false
 	}
 	s := rv.valueAsString(l)
-	for _, k := range l.lockedMutexes {
-		if k == s {
-			return s, false
-		}
+
+	if l.mutexes[s] == locked {
+		return s, false
 	}
+
 	l.modify()
-	l.lockedMutexes = append(l.lockedMutexes, s)
+	l.mutexes[s] = locked
+
 	return s, true
 }
 
@@ -145,16 +156,15 @@ func (l *lockState) unlockField(rv resolvedValue) (string, bool) {
 		return rv.valueAsString(l), false
 	}
 	s := rv.valueAsString(l)
-	for i, k := range l.lockedMutexes {
-		if k == s {
-			// Copy the last lock in and truncate.
-			l.modify()
-			l.lockedMutexes[i] = l.lockedMutexes[len(l.lockedMutexes)-1]
-			l.lockedMutexes = l.lockedMutexes[:len(l.lockedMutexes)-1]
-			return s, true
-		}
+
+	if l.mutexes[s] == unlocked {
+		return s, false
 	}
-	return s, false
+
+	l.modify()
+	delete(l.mutexes, s)
+
+	return s, true
 }
 
 // store records an alias.
@@ -166,20 +176,23 @@ func (l *lockState) store(addr ssa.Value, v ssa.Value) {
 // isSubset indicates other holds all the locks held by l.
 func (l *lockState) isSubset(other *lockState) bool {
 	held := 0 // Number in l, held by other.
-	for _, k := range l.lockedMutexes {
-		for _, ok := range other.lockedMutexes {
-			if k == ok {
-				held++
-				break
-			}
+	for k, lockType := range l.mutexes {
+		if lockType == locked && lockType == other.mutexes[k] {
+			held++
 		}
 	}
-	return held >= len(l.lockedMutexes)
+	return held >= l.numLocksHeld()
 }
 
-// count indicates the number of locks held.
-func (l *lockState) count() int {
-	return len(l.lockedMutexes)
+// numLocksHeld indicates the number of locks held.
+func (l *lockState) numLocksHeld() int {
+	held := 0
+	for _, lockType := range l.mutexes {
+		if lockType == locked {
+			held++
+		}
+	}
+	return held
 }
 
 // isCompatible returns true if the states hold the same locks.
@@ -212,19 +225,14 @@ func (l *lockState) join(other *lockState) *lockState {
 	}
 
 	// Take the intersection of locked mutexes
-	present := make(map[string]bool, len(other.lockedMutexes))
-	for _, om := range other.lockedMutexes {
-		present[om] = true
-	}
-	rls.modify()
-	var w int
-	for i, n := 0, len(rls.lockedMutexes); i < n; i++ {
-		if m := rls.lockedMutexes[i]; present[m] {
-			rls.lockedMutexes[w] = m
-			w++
+	for k, lockType := range rls.mutexes {
+		if lockType == other.mutexes[k] {
+			continue
 		}
+
+		rls.modify()
+		delete(rls.mutexes, k)
 	}
-	rls.lockedMutexes = rls.lockedMutexes[:w]
 
 	return rls
 }
@@ -332,10 +340,20 @@ func (l *lockState) valueAsString(v ssa.Value) string {
 
 // String returns the full lock state.
 func (l *lockState) String() string {
-	if l.count() == 0 {
+	if l.numLocksHeld() == 0 {
 		return "no locks held"
 	}
-	return strings.Join(l.lockedMutexes, ",")
+
+	var locksHeld []string
+	for k, lockType := range l.mutexes {
+		if lockType == locked {
+			locksHeld = append(locksHeld, k)
+		}
+	}
+	// sort for comparing results 
+	sort.Strings(locksHeld)
+
+	return strings.Join(locksHeld, ",")
 }
 
 // pushDefer pushes a defer onto the stack.

@@ -24,7 +24,7 @@ func testGuessedAndAnnotatedValid(tc *guessedAndAnnotatedGuardStruct) {
 
 func testGuessedAndAnnotatedInvalid(tc *guessedAndAnnotatedGuardStruct) {
 	tc.guardedField = 1        // +checklocksfail
-	tc.annotatedGuardField = 2 // +checkslockfail
+	tc.annotatedGuardField = 2 // +checklocksfail
 }
 
 // TODO(jamesyou): more tests

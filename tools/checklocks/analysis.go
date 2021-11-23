@@ -525,7 +525,7 @@ func (pc *passContext) checkBasicBlock(fn *ssa.Function, block *ssa.BasicBlock, 
 				}
 			}
 			// Check for other locks, but only if the above didn't trip.
-			if !failed && rls.count() != len(lff.HeldOnExit) {
+			if !failed && rls.numLocksHeld() != len(lff.HeldOnExit) {
 				pc.maybeFail(rv.Pos(), "return with unexpected locks held (locks: %s)", rls.String())
 			}
 		}
