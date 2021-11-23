@@ -20,6 +20,7 @@ import (
 	"go/types"
 	"strings"
 	"sync/atomic"
+	"sort"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -349,6 +350,8 @@ func (l *lockState) String() string {
 			locksHeld = append(locksHeld, k)
 		}
 	}
+	// sort for comparing results 
+	sort.Strings(locksHeld)
 
 	return strings.Join(locksHeld, ",")
 }
