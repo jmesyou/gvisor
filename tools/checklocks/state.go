@@ -27,9 +27,8 @@ import (
 
 // lockType represents the current state of the lock.
 // The 0 value represents the unlocked state.
-// The valid states are unlocked, locked, locked & deferredunlock
-// If a state is only deferredunlock at a return site, this is considered
-// an error.
+// The valid states during analysis are:
+// unlocked, locked, deferredunlock and locked & deferredunlock
 type lockType int
 
 const (
