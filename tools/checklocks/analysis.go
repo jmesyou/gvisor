@@ -431,21 +431,14 @@ type callCommon interface {
 }
 
 func isUnlockCall(call ssa.CallCommon) bool {
-	fn, ok := call.Value.(*ssa.Function)
-
-	if !ok {
+	// TODO(jamesyou): figure out why call.StaticCallee does not work here
+	if fn, ok := call.Value.(*ssa.Function); !ok {
 		return false
-	}
-
-	if fn.Package() == nil || fn.Package().Pkg.Name() != "sync" || fn.Signature.Recv() == nil {
+	} else if fn.Package() == nil || fn.Package().Pkg.Name() != "sync" || fn.Signature.Recv() == nil {
 		return false
+	} else {
+		return fn.Name() == "Unlock" || fn.Name() == "RUnlock"
 	}
-
-	if name := fn.Name(); name == "Unlock" || name == "RUnlock" {
-		return true
-	}
-
-	return false
 }
 
 // checkInstruction checks the legality the single instruction based on the
@@ -474,15 +467,13 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, ls *lockState) (*s
 		pc.checkCall(x, ls)
 	case *ssa.Defer:
 		if isUnlockCall(x.Call) {
-			s, ok := ls.deferUnlockField(resolvedValue{value: x.Call.Args[0], valid: true})
-			if !ok {
-				pc.maybeFail(x.Call.Pos(), "lock %s already deferred", s)
+			if s, ok := ls.deferUnlockField(resolvedValue{value: x.Call.Args[0], valid: true}); !ok {
+				pc.maybeFail(x.Call.Pos(), "unlock of %s already deferred", s)
 			}
 		}
 	case *ssa.RunDefers:
-		s, ok := ls.resolveDeferredUnlocks()
-		if !ok {
-			pc.maybeFail(x.Pos(), "lock %s cannot be deferred, already unlocked", s)
+		if s, ok := ls.resolveDeferredUnlocks(); !ok {
+			pc.maybeFail(x.Pos(), "lock %s cannot be unlocked, previously unlocked", s)
 		}
 	case *ssa.MakeClosure:
 		refs := x.Referrers()
@@ -601,7 +592,11 @@ func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init 
 
 				if !entry.isCompatible(post) {
 					// TODO(jamesyou): Should we have some mechanism for +checklocksforce here?
-					pc.maybeFail(fn.Pos(), "inconsistent lock states (first: %s, second: %v)", entry.String(), post.String())
+					pos := fn.Pos()
+					if succ.Instrs != nil {
+						pos = succ.Instrs[0].Pos()
+					}
+					pc.maybeFail(pos, "inconsistent lock states (first: %s, second: %v)", entry.String(), post.String())
 				}
 
 				pre[succ] = entry.join(post)

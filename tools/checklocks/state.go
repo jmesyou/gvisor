@@ -27,6 +27,9 @@ import (
 
 // lockType represents the current state of the lock.
 // The 0 value represents the unlocked state.
+// The valid states are unlocked, locked, locked & deferredunlock
+// If a state is only deferredunlock at a return site, this is considered
+// an error.
 type lockType int
 
 const (
@@ -38,19 +41,26 @@ const (
 // is checks if the lockType is in the state `t`.
 func (l lockType) is(t lockType) bool {
 	if t == unlocked {
-		return l == unlocked
+		return l&locked == 0
 	} else {
 		return l&t > 0
 	}
 }
 
-// and returns the union of the two lockTypes.
-func (l lockType) and(t lockType) lockType {
+// union returns the union of the two lockTypes.
+// unlocked is the identity value, `l` union unlocked == `l`
+func (l lockType) union(t lockType) lockType {
 	return l | t
 }
 
 // without returns a lockType without `t`
+// if `t` is unlocked, the state unioned with locked is returned.
+// ex. unlocked without unlocked == locked
+// ex. deferredunlock without unlocked == lock & deferredunlock
 func (l lockType) without(t lockType) lockType {
+	if t == unlocked && !l.is(locked) {
+		l = l.union(locked)
+	}
 	tNot := ^t
 	return l & tNot
 }
@@ -148,15 +158,13 @@ func (l *lockState) lockField(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	state := l.mutexes[s]
-	if state.is(locked) {
+	if state := l.mutexes[s]; state.is(locked) {
 		return s, false
+	} else {
+		l.modify()
+		l.mutexes[s] = state.union(locked)
+		return s, true
 	}
-
-	l.modify()
-	l.mutexes[s] = state.and(locked)
-
-	return s, true
 }
 
 // unlockField unlocks the given field.
@@ -192,15 +200,13 @@ func (l *lockState) deferUnlockField(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	state := l.mutexes[s]
-	if state.is(deferredunlock) {
+	if state := l.mutexes[s]; state.is(deferredunlock) {
 		return s, false
+	} else {
+		l.modify()
+		l.mutexes[s] = state.union(deferredunlock)
+		return s, true
 	}
-
-	l.modify()
-	l.mutexes[s] = state.and(deferredunlock)
-
-	return s, true
 }
 
 // store records an alias.
@@ -394,12 +400,10 @@ func (l *lockState) String() string {
 
 func (l *lockState) resolveDeferredUnlocks() (string, bool) {
 	for k, lockType := range l.mutexes {
-		if lockType.is(locked.and(deferredunlock)) {
+		if lockType.is(locked.union(deferredunlock)) {
 			l.modify()
 			l.mutexes[k] = unlocked
-			continue
-		}
-		if lockType.is(deferredunlock) {
+		} else if lockType.is(deferredunlock) {
 			return k, false
 		}
 	}
