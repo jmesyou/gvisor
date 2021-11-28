@@ -591,12 +591,8 @@ func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init 
 				entry := pre[succ]
 
 				if !entry.isCompatible(post) {
-					// TODO(jamesyou): Should we have some mechanism for +checklocksforce here?
-					pos := fn.Pos()
-					if succ.Instrs != nil {
-						pos = succ.Instrs[0].Pos()
-					}
-					pc.maybeFail(pos, "inconsistent lock states (first: %s, second: %v)", entry.String(), post.String())
+					// TODO(jamesyou): Should we simplify error reporting here?
+					pc.maybeFail(fn.Pos(), "inconsistent lock states (first: %s, second: %v)", entry.String(), post.String())
 				}
 
 				pre[succ] = entry.join(post)

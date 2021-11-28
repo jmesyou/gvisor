@@ -27,41 +27,67 @@ import (
 
 // lockType represents the current state of the lock.
 // The 0 value represents the unlocked state.
-// The valid states during analysis are:
-// unlocked, locked, deferredunlock and locked & deferredunlock
 type lockType int
 
 const (
-	unlocked lockType = 0
-	locked   lockType = 1 << iota
+	unlocked lockType = iota
+	locked
 	deferredunlock
+	lockedAndDeferredUnlock
 )
 
-// is checks if the lockType is in the state `t`.
-func (l lockType) is(t lockType) bool {
-	if t == unlocked {
-		return l&locked == 0
-	} else {
-		return l&t > 0
+// isLocked checks if `l` is in a locked state.
+func (l lockType) isLocked() bool {
+	return l == locked || l == lockedAndDeferredUnlock
+}
+
+// isUnlocked checks if `l` is in an unlocked state.
+func (l lockType) isUnlocked() bool {
+	return l == unlocked || l == deferredunlock
+}
+
+// hasDeferredUnlock checks if `l` has a deferred unlock.
+func (l lockType) hasDeferredUnlock() bool {
+	return l == deferredunlock || l == lockedAndDeferredUnlock
+}
+
+// lock transitions the lock type to a locked state.
+// If the lock type is already locked, return the same state
+func (l lockType) lock() lockType {
+	switch l {
+	case unlocked:
+		return locked
+	case deferredunlock:
+		return lockedAndDeferredUnlock
+	default:
+		return l
 	}
 }
 
-// union returns the union of the two lockTypes.
-// unlocked is the identity value, `l` union unlocked == `l`
-func (l lockType) union(t lockType) lockType {
-	return l | t
+// lock transitions the lock type to an unlocked state.
+// If the lock type is already unlocked, return the same state
+func (l lockType) unlock() lockType {
+	switch l {
+	case locked:
+		return unlocked
+	case lockedAndDeferredUnlock:
+		return deferredunlock
+	default:
+		return l
+	}
 }
 
-// without returns a lockType without `t`
-// if `t` is unlocked, the state unioned with locked is returned.
-// ex. unlocked without unlocked == locked
-// ex. deferredunlock without unlocked == lock & deferredunlock
-func (l lockType) without(t lockType) lockType {
-	if t == unlocked && !l.is(locked) {
-		l = l.union(locked)
+// lock transitions the lock type to a same state with a deferred unlock.
+// If the lock type already has a deferred unlock, return the same state
+func (l lockType) deferUnlock() lockType {
+	switch l {
+	case unlocked:
+		return deferredunlock
+	case locked:
+		return lockedAndDeferredUnlock
+	default:
+		return l
 	}
-	tNot := ^t
-	return l & tNot
 }
 
 // lockState tracks the locking state and aliases.
@@ -145,7 +171,7 @@ func (l *lockState) isHeld(rv resolvedValue) (string, bool) {
 	s := rv.valueAsString(l)
 
 	state := l.mutexes[s]
-	return s, state.is(locked)
+	return s, state.isLocked()
 }
 
 // lockField locks the given field.
@@ -157,11 +183,11 @@ func (l *lockState) lockField(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	if state := l.mutexes[s]; state.is(locked) {
+	if state := l.mutexes[s]; state.isLocked() {
 		return s, false
 	} else {
 		l.modify()
-		l.mutexes[s] = state.union(locked)
+		l.mutexes[s] = state.lock()
 		return s, true
 	}
 }
@@ -176,13 +202,13 @@ func (l *lockState) unlockField(rv resolvedValue) (string, bool) {
 	s := rv.valueAsString(l)
 
 	state := l.mutexes[s]
-	if !state.is(locked) {
+	if state.isUnlocked() {
 		return s, false
 	}
 
 	l.modify()
-	if notLocked := state.without(locked); notLocked == unlocked {
-		delete(l.mutexes, s)
+	if notLocked := state.unlock(); notLocked == unlocked {
+		delete(l.mutexes, s) // s goes back to unlocked.
 	} else {
 		l.mutexes[s] = notLocked
 	}
@@ -199,11 +225,11 @@ func (l *lockState) deferUnlockField(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	if state := l.mutexes[s]; state.is(deferredunlock) {
+	if state := l.mutexes[s]; state.hasDeferredUnlock() {
 		return s, false
 	} else {
 		l.modify()
-		l.mutexes[s] = state.union(deferredunlock)
+		l.mutexes[s] = state.deferUnlock()
 		return s, true
 	}
 }
@@ -218,7 +244,7 @@ func (l *lockState) store(addr ssa.Value, v ssa.Value) {
 func (l *lockState) isSubset(other *lockState) bool {
 	held := 0 // Number in l, held by other.
 	for k, lockType := range l.mutexes {
-		if lockType == locked && lockType == other.mutexes[k] {
+		if lockType.isLocked() && lockType == other.mutexes[k] {
 			held++
 		}
 	}
@@ -229,7 +255,7 @@ func (l *lockState) isSubset(other *lockState) bool {
 func (l *lockState) numLocksHeld() int {
 	held := 0
 	for _, lockType := range l.mutexes {
-		if lockType == locked {
+		if lockType.isLocked() {
 			held++
 		}
 	}
@@ -387,7 +413,7 @@ func (l *lockState) String() string {
 
 	var locksHeld []string
 	for k, lockType := range l.mutexes {
-		if lockType == locked {
+		if lockType.isLocked() {
 			locksHeld = append(locksHeld, k)
 		}
 	}
@@ -397,13 +423,21 @@ func (l *lockState) String() string {
 	return strings.Join(locksHeld, ",")
 }
 
+// resolveDeferredUnlocks symbolically executes earlier `defer *.Unlock()` statements on
+// the lock state. This function is called in checkInstruction when a ssa.RunDefers is
+// encountered.
 func (l *lockState) resolveDeferredUnlocks() (string, bool) {
 	for k, lockType := range l.mutexes {
-		if lockType.is(locked.union(deferredunlock)) {
+		if lockType.hasDeferredUnlock() {
+			// lock `k` is already unlocked, but there is also a deferred unlock
+			// return the invalid mutex name.
+			return k, false
+		}
+	}
+	for k, lockType := range l.mutexes {
+		if lockType.isLocked() && lockType.hasDeferredUnlock() {
 			l.modify()
 			l.mutexes[k] = unlocked
-		} else if lockType.is(deferredunlock) {
-			return k, false
 		}
 	}
 
