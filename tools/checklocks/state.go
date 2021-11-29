@@ -437,7 +437,7 @@ func (l *lockState) resolveDeferredUnlocks() (string, bool) {
 	for k, lockType := range l.mutexes {
 		if lockType.isLocked() && lockType.hasDeferredUnlock() {
 			l.modify()
-			l.mutexes[k] = unlocked
+			delete(l.mutexes, k) // k goes back to unlocked.
 		}
 	}
 
