@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"sort"
 	"strings"
 	"sync/atomic"
-	"sort"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -32,8 +32,63 @@ type lockType int
 const (
 	unlocked lockType = iota
 	locked
-	// TODO(jamesyou): DEFERUNLOCK
+	deferredunlock
+	lockedAndDeferredUnlock
 )
+
+// isLocked checks if `l` is in a locked state.
+func (l lockType) isLocked() bool {
+	return l == locked || l == lockedAndDeferredUnlock
+}
+
+// isUnlocked checks if `l` is in an unlocked state.
+func (l lockType) isUnlocked() bool {
+	return l == unlocked || l == deferredunlock
+}
+
+// hasDeferredUnlock checks if `l` has a deferred unlock.
+func (l lockType) hasDeferredUnlock() bool {
+	return l == deferredunlock || l == lockedAndDeferredUnlock
+}
+
+// lock transitions the lock type to a locked state.
+// If the lock type is already locked, return the same state
+func (l lockType) lock() lockType {
+	switch l {
+	case unlocked:
+		return locked
+	case deferredunlock:
+		return lockedAndDeferredUnlock
+	default:
+		return l
+	}
+}
+
+// lock transitions the lock type to an unlocked state.
+// If the lock type is already unlocked, return the same state
+func (l lockType) unlock() lockType {
+	switch l {
+	case locked:
+		return unlocked
+	case lockedAndDeferredUnlock:
+		return deferredunlock
+	default:
+		return l
+	}
+}
+
+// lock transitions the lock type to a same state with a deferred unlock.
+// If the lock type already has a deferred unlock, return the same state
+func (l lockType) deferUnlock() lockType {
+	switch l {
+	case unlocked:
+		return deferredunlock
+	case locked:
+		return lockedAndDeferredUnlock
+	default:
+		return l
+	}
+}
 
 // lockState tracks the locking state and aliases.
 type lockState struct {
@@ -50,9 +105,6 @@ type lockState struct {
 	// multiple use of the same memory location.
 	used map[ssa.Value]struct{}
 
-	// defers are the stack of defers that have been pushed.
-	defers []*ssa.Defer
-
 	// refs indicates the number of references on this structure. If it's
 	// greater than one, we will do copy-on-write.
 	refs *int32
@@ -65,7 +117,6 @@ func newLockState() *lockState {
 		mutexes: make(map[string]lockType),
 		used:    make(map[ssa.Value]struct{}),
 		stored:  make(map[ssa.Value]ssa.Value),
-		defers:  make([]*ssa.Defer, 0),
 		refs:    &refs,
 	}
 }
@@ -81,7 +132,6 @@ func (l *lockState) fork() *lockState {
 		mutexes: l.mutexes,
 		used:    make(map[ssa.Value]struct{}),
 		stored:  l.stored,
-		defers:  l.defers,
 		refs:    l.refs,
 	}
 }
@@ -106,11 +156,6 @@ func (l *lockState) modify() {
 		// Reset the used values.
 		l.used = make(map[ssa.Value]struct{})
 
-		// Copy the defers.
-		ds := make([]*ssa.Defer, len(l.defers))
-		copy(ds, l.defers)
-		l.defers = ds
-
 		// Drop our reference.
 		atomic.AddInt32(l.refs, -1)
 		newRefs := int32(1) // Not shared.
@@ -126,7 +171,7 @@ func (l *lockState) isHeld(rv resolvedValue) (string, bool) {
 	s := rv.valueAsString(l)
 
 	state := l.mutexes[s]
-	return s, state == locked
+	return s, state.isLocked()
 }
 
 // lockField locks the given field.
@@ -138,14 +183,13 @@ func (l *lockState) lockField(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	if l.mutexes[s] == locked {
+	if state := l.mutexes[s]; state.isLocked() {
 		return s, false
+	} else {
+		l.modify()
+		l.mutexes[s] = state.lock()
+		return s, true
 	}
-
-	l.modify()
-	l.mutexes[s] = locked
-
-	return s, true
 }
 
 // unlockField unlocks the given field.
@@ -157,14 +201,37 @@ func (l *lockState) unlockField(rv resolvedValue) (string, bool) {
 	}
 	s := rv.valueAsString(l)
 
-	if l.mutexes[s] == unlocked {
+	state := l.mutexes[s]
+	if state.isUnlocked() {
 		return s, false
 	}
 
 	l.modify()
-	delete(l.mutexes, s)
+	if notLocked := state.unlock(); notLocked == unlocked {
+		delete(l.mutexes, s) // s goes back to unlocked.
+	} else {
+		l.mutexes[s] = notLocked
+	}
 
 	return s, true
+}
+
+// deferUnlockField records a deferred unlock call.
+//
+// If false is returned, the unlock has been already deferred.
+func (l *lockState) deferUnlockField(rv resolvedValue) (string, bool) {
+	if !rv.valid {
+		return rv.valueAsString(l), false
+	}
+	s := rv.valueAsString(l)
+
+	if state := l.mutexes[s]; state.hasDeferredUnlock() {
+		return s, false
+	} else {
+		l.modify()
+		l.mutexes[s] = state.deferUnlock()
+		return s, true
+	}
 }
 
 // store records an alias.
@@ -177,7 +244,7 @@ func (l *lockState) store(addr ssa.Value, v ssa.Value) {
 func (l *lockState) isSubset(other *lockState) bool {
 	held := 0 // Number in l, held by other.
 	for k, lockType := range l.mutexes {
-		if lockType == locked && lockType == other.mutexes[k] {
+		if lockType.isLocked() && lockType == other.mutexes[k] {
 			held++
 		}
 	}
@@ -188,7 +255,7 @@ func (l *lockState) isSubset(other *lockState) bool {
 func (l *lockState) numLocksHeld() int {
 	held := 0
 	for _, lockType := range l.mutexes {
-		if lockType == locked {
+		if lockType.isLocked() {
 			held++
 		}
 	}
@@ -346,30 +413,33 @@ func (l *lockState) String() string {
 
 	var locksHeld []string
 	for k, lockType := range l.mutexes {
-		if lockType == locked {
+		if lockType.isLocked() {
 			locksHeld = append(locksHeld, k)
 		}
 	}
-	// sort for comparing results 
+	// sort for comparing results
 	sort.Strings(locksHeld)
 
 	return strings.Join(locksHeld, ",")
 }
 
-// pushDefer pushes a defer onto the stack.
-func (l *lockState) pushDefer(d *ssa.Defer) {
-	l.modify()
-	l.defers = append(l.defers, d)
-}
-
-// popDefer pops a defer from the stack.
-func (l *lockState) popDefer() *ssa.Defer {
-	// Does not technically modify the underlying slice.
-	count := len(l.defers)
-	if count == 0 {
-		return nil
+// resolveDeferredUnlocks symbolically executes earlier `defer *.Unlock()` statements on
+// the lock state. This function is called in checkInstruction when a ssa.RunDefers is
+// encountered.
+func (l *lockState) resolveDeferredUnlocks() (string, bool) {
+	for k, lockType := range l.mutexes {
+		if lockType.hasDeferredUnlock() {
+			// lock `k` is already unlocked, but there is also a deferred unlock
+			// return the invalid mutex name.
+			return k, false
+		}
 	}
-	d := l.defers[count-1]
-	l.defers = l.defers[:count-1]
-	return d
+	for k, lockType := range l.mutexes {
+		if lockType.isLocked() && lockType.hasDeferredUnlock() {
+			l.modify()
+			delete(l.mutexes, k) // k goes back to unlocked.
+		}
+	}
+
+	return "", true
 }

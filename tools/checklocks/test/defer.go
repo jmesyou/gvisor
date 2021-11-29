@@ -20,19 +20,8 @@ func testDeferValidUnlock(tc *oneGuardStruct) {
 	defer tc.mu.Unlock()
 }
 
-func testDeferValidAccess(tc *oneGuardStruct) {
+func testDeferValidBeforeAccess(tc *oneGuardStruct) {
 	tc.mu.Lock()
-	defer func() {
-		tc.guardedField = 1
-		tc.mu.Unlock()
-	}()
-}
-
-func testDeferInvalidAccess(tc *oneGuardStruct) {
-	tc.mu.Lock()
-	defer func() {
-		// N.B. Executed after tc.mu.Unlock().
-		tc.guardedField = 1 // +checklocksfail
-	}()
-	tc.mu.Unlock()
+	defer tc.mu.Unlock()
+	tc.guardedField = 1
 }

@@ -430,6 +430,17 @@ type callCommon interface {
 	Value() *ssa.Call
 }
 
+func isUnlockCall(call ssa.CallCommon) bool {
+	// TODO(jamesyou): figure out why call.StaticCallee does not work here
+	if fn, ok := call.Value.(*ssa.Function); !ok {
+		return false
+	} else if fn.Package() == nil || fn.Package().Pkg.Name() != "sync" || fn.Signature.Recv() == nil {
+		return false
+	} else {
+		return fn.Name() == "Unlock" || fn.Name() == "RUnlock"
+	}
+}
+
 // checkInstruction checks the legality the single instruction based on the
 // current lockState.
 func (pc *passContext) checkInstruction(inst ssa.Instruction, ls *lockState) (*ssa.Return, *lockState) {
@@ -455,10 +466,14 @@ func (pc *passContext) checkInstruction(inst ssa.Instruction, ls *lockState) (*s
 	case *ssa.Call:
 		pc.checkCall(x, ls)
 	case *ssa.Defer:
-		ls.pushDefer(x)
+		if isUnlockCall(x.Call) {
+			if s, ok := ls.deferUnlockField(resolvedValue{value: x.Call.Args[0], valid: true}); !ok {
+				pc.maybeFail(x.Call.Pos(), "unlock of %s already deferred", s)
+			}
+		}
 	case *ssa.RunDefers:
-		for d := ls.popDefer(); d != nil; d = ls.popDefer() {
-			pc.checkCall(d, ls)
+		if s, ok := ls.resolveDeferredUnlocks(); !ok {
+			pc.maybeFail(x.Pos(), "lock %s cannot be unlocked, previously unlocked", s)
 		}
 	case *ssa.MakeClosure:
 		refs := x.Referrers()
@@ -576,6 +591,7 @@ func (pc *passContext) checkBody(fn *ssa.Function, lff *lockFunctionFacts, init 
 				entry := pre[succ]
 
 				if !entry.isCompatible(post) {
+					// TODO(jamesyou): Should we simplify error reporting here?
 					pc.maybeFail(fn.Pos(), "inconsistent lock states (first: %s, second: %v)", entry.String(), post.String())
 				}
 
