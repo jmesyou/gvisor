@@ -556,6 +556,10 @@ func (pc *passContext) exportHatGuards(ts *ast.TypeSpec, ss *ast.StructType) {
 				lgf.HatGuard = make(map[string]bool)
 			}
 			lgf.HatGuard[guardName] = true
+
+			if pc.perf != nil {
+				pc.perf.NumOfGuesses++
+			}
 		}
 
 		if len(lgf.GuardedBy) > 0 {

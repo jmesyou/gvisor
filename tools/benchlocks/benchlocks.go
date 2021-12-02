@@ -50,7 +50,7 @@ func (sp *statsPass) collect(ppd *checklocks.PkgPerfData) Stats {
 
 	stats["error_files"] = fmt.Sprint(problematicFiles)
 	stats["total_errors"] = fmt.Sprint(totalErrors)
-
+	stats["total_hat_guesses"] = fmt.Sprint(ppd.NumOfGuesses)
 	return stats
 }
 

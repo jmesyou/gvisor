@@ -54,6 +54,8 @@ type PkgPerfData struct {
 	// FunctionCheckTime is the time spent analyzing a function. The data
 	// is saved as time.Duration as the unit of time can be decided after processing.
 	FunctionCheckTime map[string]time.Duration
+
+	NumOfGuesses int
 }
 
 // passContext is a pass with additional expected failures.
@@ -109,6 +111,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			ErrorSiteCount:    make(map[token.Pos]int),
 			BasicBlockVisits:  make(map[string]int),
 			FunctionCheckTime: make(map[string]time.Duration),
+			NumOfGuesses:      0,
 		}
 	}
 
