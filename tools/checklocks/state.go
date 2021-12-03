@@ -428,7 +428,7 @@ func (l *lockState) String() string {
 // encountered.
 func (l *lockState) resolveDeferredUnlocks() (string, bool) {
 	for k, lockType := range l.mutexes {
-		if lockType.hasDeferredUnlock() {
+		if lockType.isUnlocked() && lockType.hasDeferredUnlock() {
 			// lock `k` is already unlocked, but there is also a deferred unlock
 			// return the invalid mutex name.
 			return k, false
